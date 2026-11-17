@@ -31,3 +31,29 @@ _Avoid_: Device UI, native UI.
 The open-source read-it-later server. Crossbag uses its REST API (OAuth2
 password grant) to list articles and export them as EPUBs.
 _Avoid_: Server, backend.
+
+**Sync**:
+The browser action that pulls a bounded batch of unread wallabag articles as
+EPUBs and records each as pulled. Runs on demand from the `plugin.js` page.
+_Avoid_: Bulk pull, refresh, download-all.
+
+**Batch**:
+The bounded number of articles one Sync fetches, capped by `sync_limit`
+(default 50).
+_Avoid_: Chunk, page.
+
+**sync-state**:
+The plugin's on-SD ledger recording each pulled article's id and the filename
+it was saved under, so Sync can skip and re-pull deleted articles.
+_Avoid_: Pull history, cache, index.
+
+**Sidecar**:
+The `.meta.json` file the firmware writes next to a downloaded EPUB holding
+the article id, letting Sync and the on-reader catalog share one "pulled"
+identity.
+_Avoid_: Meta file, tag file.
+
+**Skip-and-fill**:
+Sync's walk: page through unread newest-first, skipping already-pulled
+articles, until `sync_limit` new articles land or the list ends.
+_Avoid_: Backfill, catch-up (both imply a schedule this feature lacks).
