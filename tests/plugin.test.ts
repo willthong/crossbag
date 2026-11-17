@@ -5,6 +5,7 @@ import {
   buildConfig,
   buildSyncDeps,
   buildTestRequest,
+  buildTokenRequest,
   encodeBase64Utf8,
   renderForm,
   type FetchLike,
@@ -84,8 +85,23 @@ describe('setup wizard config', () => {
       client_secret: 'client-secret',
       username: 'café ☕',
       password: 'pässwörd',
+      auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
     });
+  });
+
+  it('form-encodes the stored token body so special characters survive', () => {
+    const config = buildConfig({
+      ...formValues,
+      username: 'a&b=c',
+      password: 'p&ss+word %#',
+    });
+
+    const body = new URLSearchParams(config.auth_body ?? '');
+
+    expect(body.get('username')).toBe('a&b=c');
+    expect(body.get('password')).toBe('p&ss+word %#');
+    expect(config.auth_body).not.toContain('p&ss+word %#');
   });
 });
 
@@ -157,6 +173,7 @@ describe('setup wizard form', () => {
       client_secret: 'client-secret',
       username: 'café ☕',
       password: 'pässwörd',
+      auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
     });
   });
@@ -180,6 +197,43 @@ describe('setup wizard form', () => {
     });
 
     expect(api.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("reports wallabag's OAuth2 error code and description", async () => {
+    const container = document.createElement('div');
+    const api = makeApi({
+      status: 400,
+      body: JSON.stringify({
+        error: 'invalid_client',
+        error_description: 'The client credentials are invalid',
+      }),
+    });
+
+    renderForm(container, api);
+    fillForm(container);
+    buttonByText(container, 'Test Connection').click();
+
+    await vi.waitFor(() => {
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent ?? '').toContain('invalid_client');
+      expect(alert?.textContent ?? '').toContain(
+        'The client credentials are invalid',
+      );
+    });
+  });
+
+  it('falls back to the status code when the error body is not JSON', async () => {
+    const container = document.createElement('div');
+    const api = makeApi({ status: 502, body: '<html>bad gateway</html>' });
+
+    renderForm(container, api);
+    fillForm(container);
+    buttonByText(container, 'Test Connection').click();
+
+    await vi.waitFor(() => {
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent ?? '').toContain('HTTP 502');
+    });
   });
 });
 

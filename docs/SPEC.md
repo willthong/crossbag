@@ -37,12 +37,17 @@ crossbag.crosspoint-plugin/
 Runtime files in the plugin folder on the SD card, not listed in
 `manifest.json → files`:
 
-- `config.json` — credentials and `sync_limit` written by the wizard
+- `config.json` — credentials, the pre-encoded `auth_body`, and `sync_limit`
+  written by the wizard
 - `sync-state.json` — Sync's ledger of attempted articles and statuses
 
 ## Wallabag API integration
 
-- **Auth**: `POST /oauth/v2/token` (password grant)
+- **Auth**: `POST /oauth/v2/token` (password grant). The wizard stores the
+  form-encoded body as `config.json`'s `auth_body`, and `device.json` sends
+  `{cfg.auth_body}` verbatim: the firmware substitutes `{cfg.KEY}` values raw
+  in bodies, so per-field substitution would corrupt a password containing
+  `&` or `+` (see ADR 0005)
 - **Browse**:
   `GET /api/entries?archive=0&sort=created&order=desc&page={page}&perPage={limit}`
 - **Download**: `GET /api/entries/{id}/export.epub`

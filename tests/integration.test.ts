@@ -17,6 +17,9 @@ const config: Record<string, string> = {
   'cfg.client_secret': 'shhh',
   'cfg.username': 'reader',
   'cfg.password': 'hunter2',
+  'cfg.auth_body':
+    'grant_type=password&client_id=crossbag-client&client_secret=shhh' +
+    '&username=reader&password=hunter2',
 };
 
 interface ManifestJson {

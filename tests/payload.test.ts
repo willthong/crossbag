@@ -148,12 +148,12 @@ describe('device catalog content', () => {
     expect(raw.config.file).toBe('config.json');
   });
 
-  it('requests an OAuth2 password token from the configured server', async () => {
+  it('sends the pre-encoded OAuth2 password token body from config', async () => {
     const raw = await device();
 
     expect(raw.auth.request.url)
       .toBe('{cfg.server_url}/oauth/v2/token');
-    expect(raw.auth.request.body).toContain('grant_type=password');
+    expect(raw.auth.request.body).toBe('{cfg.auth_body}');
   });
 
   it('browses unread articles eight at a time', async () => {

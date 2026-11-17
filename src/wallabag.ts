@@ -54,6 +54,11 @@ export const WallabagConfigSchema = z.object({
   client_secret: z.string(),
   username: z.string(),
   password: z.string(),
+  // Pre-encoded `application/x-www-form-urlencoded` token request body. The
+  // on-reader catalog substitutes `{cfg.auth_body}` because the firmware
+  // inserts `{cfg.KEY}` values raw, so a password containing `&` or `+` would
+  // otherwise corrupt the password grant.
+  auth_body: z.string().optional(),
   sync_limit: z.number().int().min(1).max(500).optional(),
 });
 

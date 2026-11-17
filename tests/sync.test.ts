@@ -82,6 +82,7 @@ interface HarnessOptions {
   syncState?: unknown;
   sidecars?: Record<string, string>;
   token?: string;
+  tokenError?: { status: number; body: string };
   fetchOutcome?: (id: number) => FetchOutcome | Promise<FetchOutcome>;
   listError?: Error;
   pageError?: (
@@ -101,6 +102,9 @@ function makeHarness(options: HarnessOptions) {
 
   const relay = vi.fn<SyncDeps['relay']>(async (_method, url) => {
     if (url.endsWith('/oauth/v2/token')) {
+      if (options.tokenError !== undefined) {
+        return options.tokenError;
+      }
       return { status: 200, body: tokenResponse(token) };
     }
 
@@ -206,6 +210,22 @@ describe('runSync authentication', () => {
     for (const call of entryCalls) {
       expect(call[2].Authorization).toBe('Bearer tok-123');
     }
+  });
+
+  it("surfaces wallabag's error when the token is rejected", async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      tokenError: {
+        status: 400,
+        body: JSON.stringify({ error: 'invalid_grant' }),
+      },
+    });
+
+    await expect(runSync(harness.deps, configWithLimit(5))).rejects.toThrow(
+      /invalid_grant/,
+    );
+
+    expect(harness.fetchToSd).not.toHaveBeenCalled();
   });
 });
 

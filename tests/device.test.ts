@@ -46,6 +46,7 @@ const device = JSON.parse(await readFile(devicePath, 'utf8')) as RawDevice;
 const ALLOWED_VARIABLES = [
   '{cfg.server_url}',
   '{cfg.client_id}',
+  '{cfg.auth_body}',
   '{token}',
   '{page}',
   '{limit}',

@@ -53,6 +53,9 @@
       client_secret: values.clientSecret,
       username: values.username,
       password: values.password,
+      // The on-reader catalog cannot form-encode config values itself, so the
+      // wizard stores the finished, encoded body for it to send verbatim.
+      auth_body: buildTokenRequest(values).body,
       sync_limit: parseSyncLimit(values.syncLimit)
     };
   }
@@ -105,6 +108,20 @@
       return void 0;
     }
   }
+  function describeHttpFailure(status, body) {
+    const parsed = parseJsonBody(body);
+    if (isRecord(parsed)) {
+      const code = typeof parsed.error === "string" ? parsed.error : void 0;
+      const description = typeof parsed.error_description === "string" ? parsed.error_description : void 0;
+      if (code !== void 0 && description !== void 0 && description !== "") {
+        return `${code}: ${description} (HTTP ${status})`;
+      }
+      if (code !== void 0 && code !== "") {
+        return `${code} (HTTP ${status})`;
+      }
+    }
+    return `HTTP ${status}`;
+  }
   function setAlert(alert, message) {
     alert.textContent = message;
   }
@@ -120,7 +137,13 @@
         body: tokenRequest.body
       });
       if (!isOk(tokenResponse.status)) {
-        setAlert(alert, `Connection failed (HTTP ${tokenResponse.status}).`);
+        setAlert(
+          alert,
+          `Connection failed: ${describeHttpFailure(
+            tokenResponse.status,
+            tokenResponse.body
+          )}.`
+        );
         return;
       }
       const token = parseAccessToken(tokenResponse.body);
@@ -133,7 +156,13 @@
         headers: request.headers
       });
       if (!isOk(response.status)) {
-        setAlert(alert, `Connection failed (HTTP ${response.status}).`);
+        setAlert(
+          alert,
+          `Connection failed: ${describeHttpFailure(
+            response.status,
+            response.body
+          )}.`
+        );
         return;
       }
       setAlert(alert, "Connection works.");
@@ -422,7 +451,12 @@
       );
     }
     if (!isOk(response.status)) {
-      throw new Error(`Authentication failed (HTTP ${response.status}).`);
+      throw new Error(
+        `Authentication failed: ${describeHttpFailure(
+          response.status,
+          response.body
+        )}.`
+      );
     }
     const token = parseAccessToken(response.body);
     if (token === void 0) {

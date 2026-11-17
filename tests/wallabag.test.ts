@@ -160,3 +160,22 @@ describe('wallabag config sync limit', () => {
     expect(parsed.success).toBe(false);
   });
 });
+
+describe('wallabag config auth body', () => {
+  it('accepts the pre-encoded token body the wizard writes', () => {
+    const authBody = 'grant_type=password&client_id=crossbag-client';
+
+    const parsed = WallabagConfigSchema.parse({
+      ...wizardConfig,
+      auth_body: authBody,
+    });
+
+    expect(parsed.auth_body).toBe(authBody);
+  });
+
+  it('leaves the body optional for configs the wizard did not write', () => {
+    const parsed = WallabagConfigSchema.parse({ ...wizardConfig });
+
+    expect(parsed.auth_body).toBeUndefined();
+  });
+});

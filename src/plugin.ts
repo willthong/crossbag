@@ -103,6 +103,9 @@ export function buildConfig(values: SetupFormValues): WallabagConfig {
     client_secret: values.clientSecret,
     username: values.username,
     password: values.password,
+    // The on-reader catalog cannot form-encode config values itself, so the
+    // wizard stores the finished, encoded body for it to send verbatim.
+    auth_body: buildTokenRequest(values).body,
     sync_limit: parseSyncLimit(values.syncLimit),
   };
 }
@@ -168,6 +171,28 @@ function parseAccessToken(body: string): string | undefined {
   }
 }
 
+/**
+ * Summarise an HTTP failure, preferring wallabag's OAuth2 error body (for
+ * example `invalid_client` or `invalid_grant`) over a bare status code.
+ */
+function describeHttpFailure(status: number, body: string): string {
+  const parsed = parseJsonBody(body);
+  if (isRecord(parsed)) {
+    const code = typeof parsed.error === 'string' ? parsed.error : undefined;
+    const description =
+      typeof parsed.error_description === 'string'
+        ? parsed.error_description
+        : undefined;
+    if (code !== undefined && description !== undefined && description !== '') {
+      return `${code}: ${description} (HTTP ${status})`;
+    }
+    if (code !== undefined && code !== '') {
+      return `${code} (HTTP ${status})`;
+    }
+  }
+  return `HTTP ${status}`;
+}
+
 function setAlert(alert: HTMLElement, message: string): void {
   alert.textContent = message;
 }
@@ -191,7 +216,13 @@ async function testConnection(
     });
 
     if (!isOk(tokenResponse.status)) {
-      setAlert(alert, `Connection failed (HTTP ${tokenResponse.status}).`);
+      setAlert(
+        alert,
+        `Connection failed: ${describeHttpFailure(
+          tokenResponse.status,
+          tokenResponse.body,
+        )}.`,
+      );
       return;
     }
 
@@ -207,7 +238,13 @@ async function testConnection(
     });
 
     if (!isOk(response.status)) {
-      setAlert(alert, `Connection failed (HTTP ${response.status}).`);
+      setAlert(
+        alert,
+        `Connection failed: ${describeHttpFailure(
+          response.status,
+          response.body,
+        )}.`,
+      );
       return;
     }
 
@@ -689,7 +726,12 @@ async function obtainToken(
   }
 
   if (!isOk(response.status)) {
-    throw new Error(`Authentication failed (HTTP ${response.status}).`);
+    throw new Error(
+      `Authentication failed: ${describeHttpFailure(
+        response.status,
+        response.body,
+      )}.`,
+    );
   }
 
   const token = parseAccessToken(response.body);
