@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  WallabagConfigSchema,
   WallabagEntriesResponseSchema,
   WallabagEntrySchema,
   WallabagTokenResponseSchema,
@@ -114,5 +115,48 @@ describe('wallabag token response', () => {
 
     expect(() => WallabagTokenResponseSchema.parse(withoutToken))
       .toThrow(/access_token/);
+  });
+});
+
+const wizardConfig = {
+  server_url: 'https://wallabag.example.com',
+  client_id: 'crossbag-client',
+  client_secret: 'client-secret',
+  username: 'reader',
+  password: 'hunter2',
+};
+
+describe('wallabag config sync limit', () => {
+  it('keeps a sync_limit of 50 written by the setup wizard', () => {
+    const parsed = WallabagConfigSchema.parse({
+      ...wizardConfig,
+      sync_limit: 50,
+    });
+
+    expect(parsed.sync_limit).toBe(50);
+  });
+
+  it('still parses a config written before sync_limit existed', () => {
+    const parsed = WallabagConfigSchema.parse({ ...wizardConfig });
+
+    expect(parsed.sync_limit).toBeUndefined();
+  });
+
+  it('rejects a negative sync_limit', () => {
+    const parsed = WallabagConfigSchema.safeParse({
+      ...wizardConfig,
+      sync_limit: -1,
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects a sync_limit above 500', () => {
+    const parsed = WallabagConfigSchema.safeParse({
+      ...wizardConfig,
+      sync_limit: 501,
+    });
+
+    expect(parsed.success).toBe(false);
   });
 });

@@ -21,4 +21,14 @@ Daily use
 Open the Crossbag catalog on the reader, browse your unread articles newest
 first, and pick one. It downloads to /Wallabag as an EPUB.
 
+Bulk pull (Sync)
+
+With File Transfer running, open the web UI Plugins page, select Crossbag,
+and choose Sync. Sync loads config.json, pulls up to your sync_limit
+(default 50) unread articles, and saves them to /Wallabag. Run it again for
+the next batch.
+
+The browser page must stay open while Sync runs. If config.json is missing,
+choose Save in the wizard first.
+
 Licence: MIT. Source: github.com/willthong/crossbag

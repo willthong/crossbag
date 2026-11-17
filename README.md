@@ -1,18 +1,31 @@
 # Crossbag
 
-[![CI](https://github.com/willthong/crossbag/actions/workflows/ci.yml/badge.svg)](https://github.com/willthong/crossbag/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-88%25-brightgreen)](https://github.com/willthong/crossbag/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A522-339933)](package.json)
-[![Plugin Hub](https://img.shields.io/badge/Plugin%20Hub-compatible-blueviolet)](https://github.com/crosspoint-reader/crosspoint-plugin-hub)
+[![CI][ci-badge]][ci]
+[![Coverage][coverage-badge]][ci]
+[![License: MIT][license-badge]][license]
+[![Node][node-badge]][package]
+[![Plugin Hub][hub-badge]][hub]
+
+[ci]: https://github.com/willthong/crossbag/actions/workflows/ci.yml
+[ci-badge]:
+  https://github.com/willthong/crossbag/actions/workflows/ci.yml/badge.svg
+[coverage-badge]:
+  https://img.shields.io/badge/coverage-88%25-brightgreen
+[license-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[license]: LICENSE
+[node-badge]: https://img.shields.io/badge/node-%E2%89%A522-339933
+[package]: package.json
+[hub-badge]: https://img.shields.io/badge/Plugin%20Hub-compatible-blueviolet
+[hub]: https://github.com/crosspoint-reader/crosspoint-plugin-hub
 
 Crossbag pulls your unread [wallabag](https://wallabag.org) articles onto a
 CrossPoint e-reader as EPUBs, so you can read them offline.
 
 It has two parts:
 
-- **Setup wizard** — a browser UI that runs once to configure your wallabag
-  server and account.
+- **Setup wizard and Sync** — a browser UI that configures your wallabag
+  server and account, and can pull a bounded batch of unread articles on
+  demand.
 - **On-reader catalog** — a firmware screen that browses unread articles and
   downloads them as EPUBs, with no browser involved.
 
@@ -95,6 +108,9 @@ Before publishing, confirm on hardware:
 - [ ] the catalog lists your unread articles, newest first, 8 per page
 - [ ] downloading one produces an EPUB in `/Wallabag`
 - [ ] the EPUB opens and renders in the reader
+- [ ] `Sync` pulls a batch into `/Wallabag` and reports its summary
+- [ ] `/api/entries/{id}/export.epub` returns an EPUB directly, not a redirect
+      (`api.fetchToSd` does not follow redirects)
 
 If the catalog lists nothing, check the `_embedded.items` assumption noted in
 `DETAILS.md`: run `curl -H "Authorization: Bearer <token>" \
@@ -162,6 +178,9 @@ requests an OAuth2 token and then fetches one article page to prove the
 credentials work — then choose **Save**. The wizard writes `config.json` into
 the plugin folder on the SD card.
 
+**Articles per sync** sets `sync_limit` (default 50, range 1–500). Sync always
+reads the saved `config.json`; if it is missing, save your credentials first.
+
 Your `config.json` is stored unencrypted on the SD card, including the client
 secret and your wallabag password. Treat the card as sensitive.
 
@@ -174,6 +193,32 @@ Exit **File Transfer** and open **Home → Plugins → Crossbag**.
 Open the Crossbag catalog on the reader to browse your unread articles,
 newest first. Pick one to download it to `/Wallabag` as `{title}.epub`. The
 on-reader catalog works without a browser.
+
+## Pull a batch with Sync
+
+Sync pulls up to `sync_limit` unread articles in one go, newest first. It
+skips articles already on the card, including ones pulled through the
+catalog, and re-downloads an article if its EPUB was deleted. Per-article
+failures do not stop the batch; retryable failures are tried again next sync,
+while articles deleted server-side are recorded as skipped forever.
+
+1. On the reader, open **File Transfer** so the web server is running.
+2. In the browser, open the **Plugins** page and select Crossbag.
+3. Make sure `config.json` is saved, then choose **Sync**.
+
+The browser page **must stay open** while Sync runs: the loop runs in the
+page, not on the device. The status line shows progress, then a summary such
+as:
+
+`42 pulled · 1 failed (retries next sync) · 1 skipped (deleted server-side)`.
+
+If the batch hit `sync_limit` while unread articles remained, it says so;
+run Sync again for the next batch. If the page lost its connection or a page
+request failed, the summary warns that the sync did not reach the end of
+the list.
+
+Sync writes its ledger to `sync-state.json` in the plugin folder on the SD
+card. It is a runtime file, so it is not listed in `manifest.json`.
 
 ## Develop
 

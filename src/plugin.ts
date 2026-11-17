@@ -3,6 +3,11 @@ import type { WallabagConfig } from './wallabag';
 
 export const PLUGIN_NAME = 'crossbag';
 
+/** The one home for the sync-limit default and bounds. */
+export const SYNC_LIMIT_DEFAULT = 50;
+export const SYNC_LIMIT_MIN = 1;
+export const SYNC_LIMIT_MAX = 500;
+
 /** Values collected by the setup wizard's form. */
 export interface SetupFormValues {
   serverUrl: string;
@@ -10,6 +15,7 @@ export interface SetupFormValues {
   clientSecret: string;
   username: string;
   password: string;
+  syncLimit: string;
 }
 
 export interface TestRequest {
@@ -27,8 +33,10 @@ export interface TokenRequest {
 interface FieldSpec {
   name: keyof SetupFormValues;
   label: string;
-  type: 'text' | 'password';
+  type: 'text' | 'password' | 'number';
   value: string;
+  min?: string;
+  max?: string;
 }
 
 type InputMap = Record<keyof SetupFormValues, HTMLInputElement>;
@@ -39,7 +47,36 @@ const FIELDS: readonly FieldSpec[] = [
   { name: 'clientSecret', label: 'Client Secret', type: 'password', value: '' },
   { name: 'username', label: 'Username', type: 'text', value: '' },
   { name: 'password', label: 'Password', type: 'password', value: '' },
+  {
+    name: 'syncLimit',
+    label: 'Articles per sync',
+    type: 'number',
+    value: String(SYNC_LIMIT_DEFAULT),
+    min: String(SYNC_LIMIT_MIN),
+    max: String(SYNC_LIMIT_MAX),
+  },
 ];
+
+/** Clamp any number into the supported sync-limit range. */
+function clampSyncLimit(value: number): number {
+  const whole = Math.trunc(value);
+  return Math.min(SYNC_LIMIT_MAX, Math.max(SYNC_LIMIT_MIN, whole));
+}
+
+/** Parse the sync-limit field, falling back to the default for bad input. */
+export function parseSyncLimit(raw: string): number {
+  const trimmed = raw.trim();
+  if (trimmed === '') {
+    return SYNC_LIMIT_DEFAULT;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) {
+    return SYNC_LIMIT_DEFAULT;
+  }
+
+  return clampSyncLimit(parsed);
+}
 
 /** Strip trailing slashes so path templates never produce `//`. */
 function withoutTrailingSlashes(serverUrl: string): string {
@@ -66,6 +103,7 @@ export function buildConfig(values: SetupFormValues): WallabagConfig {
     client_secret: values.clientSecret,
     username: values.username,
     password: values.password,
+    sync_limit: parseSyncLimit(values.syncLimit),
   };
 }
 
@@ -105,6 +143,7 @@ function readValues(inputs: InputMap): SetupFormValues {
     clientSecret: inputs.clientSecret.value,
     username: inputs.username.value,
     password: inputs.password.value,
+    syncLimit: inputs.syncLimit.value,
   };
 }
 
@@ -131,6 +170,10 @@ function parseAccessToken(body: string): string | undefined {
 
 function setAlert(alert: HTMLElement, message: string): void {
   alert.textContent = message;
+}
+
+function setStatus(status: HTMLElement, message: string): void {
+  status.textContent = message;
 }
 
 async function testConnection(
@@ -197,16 +240,78 @@ function addButton(
   form: HTMLFormElement,
   label: string,
   onClick: () => void,
-): void {
+): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = label;
   button.addEventListener('click', onClick);
   form.append(button);
+  return button;
+}
+
+/** Narrow the wizard's API to the richer surface Sync needs. */
+function asSyncApi(api: CrossPointApi): SyncApi | undefined {
+  const candidate = api as Partial<SyncApi>;
+  return typeof candidate.fetchToSd === 'function'
+    ? (api as SyncApi)
+    : undefined;
+}
+
+/** Build the one-line summary shown after Sync ends. */
+function summarize(result: SyncResult): string {
+  let summary =
+    `${result.pulled} pulled · ${result.failed} failed (retries next sync) · ` +
+    `${result.skipped} skipped (deleted server-side)`;
+
+  if (result.limitHit) {
+    summary += ' — more unread articles remain.';
+  }
+  if (result.interrupted) {
+    summary += ' — the sync did not reach the end of the list.';
+  }
+
+  return summary;
+}
+
+async function syncArticles(
+  api: CrossPointApi,
+  status: HTMLElement,
+  fetchImpl: FetchLike,
+  button: HTMLButtonElement,
+): Promise<void> {
+  if (button.disabled) {
+    return;
+  }
+
+  const syncApi = asSyncApi(api);
+  if (syncApi === undefined) {
+    setStatus(status, 'Sync is unavailable: the device API has no file download.');
+    return;
+  }
+
+  button.disabled = true;
+  setStatus(status, 'Syncing…');
+
+  try {
+    const deps = buildSyncDeps(syncApi, fetchImpl);
+    const config = await loadSavedConfig(deps);
+    const result = await runSync(deps, config, (attempted, total) => {
+      setStatus(status, `${attempted}/${total}`);
+    });
+    setStatus(status, summarize(result));
+  } catch (error) {
+    setStatus(status, describeError(error));
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /** Render the setup wizard into the container and wire its buttons. */
-export function renderForm(container: HTMLElement, api: CrossPointApi): void {
+export function renderForm(
+  container: HTMLElement,
+  api: CrossPointApi,
+  fetchImpl: FetchLike = globalThis.fetch,
+): void {
   const form = document.createElement('form');
   const inputs = {} as InputMap;
 
@@ -217,6 +322,12 @@ export function renderForm(container: HTMLElement, api: CrossPointApi): void {
     input.type = field.type;
     input.name = field.name;
     input.value = field.value;
+    if (field.min !== undefined) {
+      input.min = field.min;
+    }
+    if (field.max !== undefined) {
+      input.max = field.max;
+    }
     label.append(input);
     form.append(label);
     inputs[field.name] = input;
@@ -225,19 +336,696 @@ export function renderForm(container: HTMLElement, api: CrossPointApi): void {
   const alert = document.createElement('p');
   alert.setAttribute('role', 'alert');
 
+  const status = document.createElement('p');
+  status.setAttribute('data-sync-status', '');
+
   addButton(form, 'Test Connection', () => {
     void testConnection(inputs, api, alert);
   });
   addButton(form, 'Save', () => {
     void saveConfig(inputs, api, alert);
   });
+  const syncButton = addButton(form, 'Sync', () => {
+    void syncArticles(api, status, fetchImpl, syncButton);
+  });
 
+  form.append(status);
   form.append(alert);
   container.append(form);
 }
 
+/** Characters that are illegal in filenames on the device or on FAT storage. */
+// eslint-disable-next-line no-control-regex
+const ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|\u0000-\u001f\u007f]/g;
+
+/** Turn an article title into a filesystem-safe filename part. */
+export function sanitizeFilenamePart(raw: string): string {
+  const cleaned = raw
+    .replace(ILLEGAL_FILENAME_CHARS, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '');
+
+  return cleaned.length > 0 ? cleaned : 'untitled';
+}
+
+/** The last path segment, so paths and bare names compare alike. */
+function basename(path: string): string {
+  const parts = path.split('/');
+  return parts[parts.length - 1] ?? path;
+}
+
+/** Pick a unique `.epub` filename for an article in `/Wallabag`. */
+export function chooseFilename(
+  title: string,
+  id: number,
+  existing: ReadonlySet<string>,
+): string {
+  const base = sanitizeFilenamePart(title);
+  const taken = new Set([...existing].map((name) => name.toLowerCase()));
+  const isTaken = (candidate: string): boolean =>
+    taken.has(candidate.toLowerCase());
+
+  const preferred = `${base}.epub`;
+  if (!isTaken(preferred)) {
+    return preferred;
+  }
+
+  const qualified = `${base}-${id}.epub`;
+  if (!isTaken(qualified)) {
+    return qualified;
+  }
+
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${id}-${suffix}.epub`;
+    if (!isTaken(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+/** Status recorded for an article Sync has attempted. */
+export type SyncStatus = 'pulled' | 'skipped' | 'failed';
+
+const SYNC_STATUS_VALUES = ['pulled', 'skipped', 'failed'] as const;
+
+function isSyncStatus(value: unknown): value is SyncStatus {
+  return (
+    typeof value === 'string' &&
+    (SYNC_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+export interface SyncStateArticle {
+  filename: string;
+  status: SyncStatus;
+}
+
+/** Ledger of articles Sync has attempted: article id -> filename and status. */
+export interface SyncState {
+  articles: Record<string, SyncStateArticle>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readSyncStateArticle(value: unknown): SyncStateArticle | undefined {
+  if (!isRecord(value) || typeof value.filename !== 'string') {
+    return undefined;
+  }
+
+  // A ledger written before statuses existed recorded only successful pulls.
+  const status = value.status === undefined ? 'pulled' : value.status;
+  if (!isSyncStatus(status)) {
+    return undefined;
+  }
+
+  return { filename: value.filename, status };
+}
+
+/** Parse the user-editable `sync-state.json`, tolerating garbage. */
+export function readSyncState(raw: unknown): SyncState {
+  const empty: SyncState = { articles: {} };
+  if (!isRecord(raw) || !isRecord(raw.articles)) {
+    return empty;
+  }
+
+  const articles: Record<string, SyncStateArticle> = {};
+  for (const [id, value] of Object.entries(raw.articles)) {
+    if (!/^\d+$/.test(id)) {
+      continue;
+    }
+    const article = readSyncStateArticle(value);
+    if (article !== undefined) {
+      articles[id] = article;
+    }
+  }
+
+  return { articles };
+}
+
+const EPUB_SUFFIX = '.epub';
+const SIDECAR_SUFFIX = '.meta.json';
+
+/** The EPUB a sidecar describes, or undefined when `name` is not a sidecar. */
+function sidecarEpub(name: string): string | undefined {
+  if (!name.endsWith(SIDECAR_SUFFIX)) {
+    return undefined;
+  }
+
+  const epub = name.slice(0, -SIDECAR_SUFFIX.length);
+  return epub.endsWith(EPUB_SUFFIX) ? epub : undefined;
+}
+
+/** Ids already present on the SD card, from sync-state and sidecars. */
+export function computePulledIds(
+  state: SyncState,
+  files: string[],
+  sidecarIds: Record<string, number>,
+): Set<number> {
+  const present = new Set(files.map((name) => basename(name)));
+  const pulled = new Set<number>();
+
+  for (const [id, entry] of Object.entries(state.articles)) {
+    const articleId = Number(id);
+    if (!Number.isInteger(articleId)) {
+      continue;
+    }
+
+    if (entry.status === 'failed') {
+      continue;
+    }
+    if (entry.status === 'skipped') {
+      pulled.add(articleId);
+      continue;
+    }
+
+    const saved = basename(entry.filename);
+    if (saved.endsWith(EPUB_SUFFIX) && present.has(saved)) {
+      pulled.add(articleId);
+    }
+  }
+
+  for (const [name, id] of Object.entries(sidecarIds)) {
+    const epub = sidecarEpub(basename(name));
+    if (epub !== undefined && present.has(epub)) {
+      pulled.add(id);
+    }
+  }
+
+  return pulled;
+}
+
+/** Firmware capabilities Sync needs, injected so tests can mock the device. */
+export interface SyncDeps {
+  relay: (
+    method: string,
+    url: string,
+    headers: Record<string, string>,
+    body?: string,
+  ) => Promise<{ status: number; body: string }>;
+  fetchToSd: (
+    url: string,
+    dest: string,
+    headers: Record<string, string>,
+  ) => Promise<{ status: number; bytes: number; complete: boolean }>;
+  writeFile: (path: string, dataB64: string) => Promise<{ ok: boolean }>;
+  listFiles: (path: string) => Promise<string[]>;
+  readFile: (path: string) => Promise<string>;
+}
+
+export interface SyncResult {
+  pulled: number;
+  failed: number;
+  skipped: number;
+  reachedEnd: boolean;
+  limitHit: boolean;
+  interrupted: boolean;
+}
+
+/** Firmware handles Sync needs from `api`, beyond the setup-wizard surface. */
+export interface SyncApi {
+  name: string;
+  relay: CrossPointApi['relay'];
+  fetchToSd: SyncDeps['fetchToSd'];
+  writeFile: CrossPointApi['writeFile'];
+}
+
+/** The slice of `fetch` Sync's device-file access depends on. */
+export type FetchLike = (url: string) => Promise<{
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+  text(): Promise<string>;
+}>;
+
 /**
- * Register the setup wizard with the firmware.
+ * Turn a `GET /api/files` body into non-directory names.
+ *
+ * A malformed body must throw rather than look like an empty directory: Sync
+ * would otherwise treat every recorded article as deleted and re-download
+ * the entire unread list.
+ */
+function fileNamesFromListing(payload: unknown): string[] {
+  if (!Array.isArray(payload)) {
+    throw new Error('Invalid /api/files response: expected a list.');
+  }
+
+  const names: string[] = [];
+  for (const entry of payload) {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new Error('Invalid /api/files response: expected file objects.');
+    }
+    const { name, isDirectory } = entry as {
+      name?: unknown;
+      isDirectory?: unknown;
+    };
+    if (typeof name !== 'string') {
+      throw new Error('Invalid /api/files response: file has no name.');
+    }
+    if (isDirectory !== true) {
+      names.push(name);
+    }
+  }
+
+  return names;
+}
+
+/** Wire the firmware `api` and the page's `fetch` into SyncDeps. */
+export function buildSyncDeps(api: SyncApi, fetchImpl: FetchLike): SyncDeps {
+  return {
+    relay: async (method, url, headers, body) => {
+      const options =
+        body !== undefined
+          ? { headers, body }
+          : Object.keys(headers).length > 0
+            ? { headers }
+            : {};
+      return await api.relay(method, url, options);
+    },
+    fetchToSd: (url, dest, headers) => api.fetchToSd(url, dest, headers),
+    writeFile: async (path, dataB64) => {
+      await api.writeFile(path, dataB64);
+      return { ok: true };
+    },
+    listFiles: async (path) => {
+      const url = `/api/files?path=${encodeURIComponent(path)}`;
+      const response = await fetchImpl(url);
+      if (!response.ok) {
+        throw new Error(`Could not list ${path} (HTTP ${response.status}).`);
+      }
+      return fileNamesFromListing(await response.json());
+    },
+    readFile: async (path) => {
+      const url = `/download?path=${encodeURIComponent(path)}`;
+      const response = await fetchImpl(url);
+      if (!response.ok) {
+        throw new Error(`Could not read ${path} (HTTP ${response.status}).`);
+      }
+      return await response.text();
+    },
+  };
+}
+
+const WALLABAG_DIR = '/Wallabag';
+const SYNC_STATE_PATH = 'sync-state.json';
+const CONFIG_PATH = 'config.json';
+const ENTRIES_PER_PAGE = 16;
+
+/** An unread article as Sync needs it: an id and a title. */
+interface SyncArticle {
+  id: number;
+  title: string;
+}
+
+/** One decoded page of the unread entry listing. */
+interface EntriesPage {
+  items: SyncArticle[];
+  page: number;
+  pages: number;
+}
+
+/** Turn a stored config into the form values the request builders expect. */
+function configValues(config: WallabagConfig): SetupFormValues {
+  return {
+    serverUrl: config.server_url,
+    clientId: config.client_id,
+    clientSecret: config.client_secret,
+    username: config.username,
+    password: config.password,
+    syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
+  };
+}
+
+/** Clamp a configured batch size into the supported bounds. */
+function syncLimitOf(config: WallabagConfig): number {
+  const raw = config.sync_limit;
+  if (raw === undefined || !Number.isFinite(raw)) {
+    return SYNC_LIMIT_DEFAULT;
+  }
+  return clampSyncLimit(raw);
+}
+
+/** Trade the configured credentials for a bearer token, or throw. */
+async function obtainToken(
+  deps: SyncDeps,
+  config: WallabagConfig,
+): Promise<string> {
+  const request = buildTokenRequest(configValues(config));
+
+  let response: { status: number; body: string };
+  try {
+    response = await deps.relay(
+      request.method,
+      request.url,
+      { 'Content-Type': 'application/x-www-form-urlencoded' },
+      request.body,
+    );
+  } catch (error) {
+    throw new Error(
+      `Could not reach the wallabag server: ${describeError(error)}`,
+      { cause: error },
+    );
+  }
+
+  if (!isOk(response.status)) {
+    throw new Error(`Authentication failed (HTTP ${response.status}).`);
+  }
+
+  const token = parseAccessToken(response.body);
+  if (token === undefined) {
+    throw new Error('Authentication failed: no access token in the response.');
+  }
+
+  return token;
+}
+
+/** Build the metadata-only listing URL for one page of unread articles. */
+function buildEntriesUrl(serverUrl: string, page: number): string {
+  const params = new URLSearchParams({
+    archive: '0',
+    detail: 'metadata',
+    sort: 'created',
+    order: 'desc',
+    page: String(page),
+    perPage: String(ENTRIES_PER_PAGE),
+  });
+
+  return `${withoutTrailingSlashes(serverUrl)}/api/entries?${params.toString()}`;
+}
+
+/** Decode one entries page, or undefined when the body is malformed. */
+function parseEntriesPage(body: string): EntriesPage | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+
+  if (!isRecord(parsed) || !isRecord(parsed._embedded)) {
+    return undefined;
+  }
+
+  const rawItems = parsed._embedded.items;
+  if (!Array.isArray(rawItems)) {
+    return undefined;
+  }
+
+  const items: SyncArticle[] = [];
+  for (const item of rawItems) {
+    if (!isRecord(item)) {
+      return undefined;
+    }
+    const { id, title } = item;
+    if (typeof id !== 'number' || !Number.isInteger(id)) {
+      return undefined;
+    }
+    items.push({ id, title: typeof title === 'string' ? title : '' });
+  }
+
+  return {
+    items,
+    page: typeof parsed.page === 'number' ? parsed.page : 1,
+    pages: typeof parsed.pages === 'number' ? parsed.pages : 1,
+  };
+}
+
+/** Decode a JSON body that may arrive either plain or base64 encoded. */
+function parseJsonBody(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    try {
+      return JSON.parse(atob(body));
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+/** Check the saved config's required fields without importing zod. */
+function isWallabagConfig(value: unknown): value is WallabagConfig {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const textFields = [
+    'server_url',
+    'client_id',
+    'client_secret',
+    'username',
+    'password',
+  ] as const;
+  for (const field of textFields) {
+    if (typeof value[field] !== 'string') {
+      return false;
+    }
+  }
+
+  const limit = value.sync_limit;
+  return limit === undefined || typeof limit === 'number';
+}
+
+/** Load the saved `config.json`; Sync never trusts blank form fields. */
+async function loadSavedConfig(deps: SyncDeps): Promise<WallabagConfig> {
+  let raw: string;
+  try {
+    raw = await deps.readFile(CONFIG_PATH);
+  } catch (error) {
+    throw new Error(
+      'Could not load config.json. Save your credentials first.',
+      { cause: error },
+    );
+  }
+
+  const parsed = parseJsonBody(raw);
+  if (!isWallabagConfig(parsed)) {
+    throw new Error(
+      'Could not read config.json. Save your credentials first.',
+    );
+  }
+
+  return parsed;
+}
+
+/** Extract the article id a catalog sidecar records under `book_id`. */
+function parseSidecarId(body: string): number | undefined {
+  const parsed = parseJsonBody(body);
+  if (!isRecord(parsed)) {
+    return undefined;
+  }
+
+  const raw = parsed.book_id;
+  const id = typeof raw === 'string' ? Number(raw) : raw;
+
+  return typeof id === 'number' && Number.isInteger(id) ? id : undefined;
+}
+
+/** Read the sidecars that have a matching EPUB on disk, mapping name to id. */
+async function readSidecarIds(
+  deps: SyncDeps,
+  files: string[],
+): Promise<Record<string, number>> {
+  const names = files.map((name) => basename(name));
+  const present = new Set(names);
+  const sidecars = names.filter((name) => {
+    const epub = sidecarEpub(name);
+    return epub !== undefined && present.has(epub);
+  });
+
+  const reads = await Promise.all(
+    sidecars.map(async (name): Promise<[string, number] | undefined> => {
+      try {
+        const raw = await deps.readFile(`${WALLABAG_DIR}/${name}`);
+        const id = parseSidecarId(raw);
+        return id === undefined ? undefined : [name, id];
+      } catch {
+        // One unreadable sidecar simply contributes no id.
+        return undefined;
+      }
+    }),
+  );
+
+  const ids: Record<string, number> = {};
+  for (const entry of reads) {
+    if (entry !== undefined) {
+      ids[entry[0]] = entry[1];
+    }
+  }
+
+  return ids;
+}
+
+/** Load the stored sync-state ledger, or an empty one when unreadable. */
+async function loadSyncState(deps: SyncDeps): Promise<SyncState> {
+  try {
+    return readSyncState(parseJsonBody(await deps.readFile(SYNC_STATE_PATH)));
+  } catch {
+    return { articles: {} };
+  }
+}
+
+/** Classify one download: skipped, failed, or pulled. */
+function classifyOutcome(outcome: {
+  status: number;
+  complete: boolean;
+}): SyncStatus {
+  if (outcome.status === 404 || outcome.status === 410) {
+    return 'skipped';
+  }
+  if (!isOk(outcome.status) || !outcome.complete) {
+    return 'failed';
+  }
+  return 'pulled';
+}
+
+/** Pull one bounded batch of unread articles onto the SD card. */
+export async function runSync(
+  deps: SyncDeps,
+  config: WallabagConfig,
+  onProgress?: (attempted: number, total: number) => void,
+): Promise<SyncResult> {
+  const token = await obtainToken(deps, config);
+  const authHeaders = { Authorization: `Bearer ${token}` };
+
+  let files: string[];
+  try {
+    files = await deps.listFiles(WALLABAG_DIR);
+  } catch (error) {
+    throw new Error(`Could not list ${WALLABAG_DIR}: ${describeError(error)}`, {
+      cause: error,
+    });
+  }
+
+  const state = await loadSyncState(deps);
+  const sidecarIds = await readSidecarIds(deps, files);
+  const pulledIds = computePulledIds(state, files, sidecarIds);
+  const names = new Set(files.map((name) => basename(name)));
+  const nextState: SyncState = { articles: { ...state.articles } };
+  const candidates = new Set<number>();
+
+  const limit = syncLimitOf(config);
+  let pulled = 0;
+  let failed = 0;
+  let skipped = 0;
+  let page = 1;
+  let reachedEnd = false;
+  let limitHit = false;
+  let interrupted = false;
+
+  const record = (
+    article: SyncArticle,
+    filename: string,
+    status: SyncStatus,
+  ): void => {
+    nextState.articles[String(article.id)] = { filename, status };
+  };
+
+  const reportProgress = (): void => {
+    if (onProgress !== undefined && candidates.size > 0) {
+      onProgress(
+        pulled + failed + skipped,
+        Math.min(limit, candidates.size),
+      );
+    }
+  };
+
+  try {
+    while (true) {
+      if (pulled >= limit) {
+        limitHit = true;
+        break;
+      }
+
+      const url = buildEntriesUrl(config.server_url, page);
+      let response: { status: number; body: string };
+      try {
+        response = await deps.relay('GET', url, authHeaders);
+      } catch {
+        interrupted = true;
+        break;
+      }
+
+      if (!isOk(response.status)) {
+        interrupted = true;
+        break;
+      }
+
+      const listing = parseEntriesPage(response.body);
+      if (listing === undefined) {
+        interrupted = true;
+        break;
+      }
+      if (listing.items.length === 0) {
+        reachedEnd = true;
+        break;
+      }
+
+      for (const article of listing.items) {
+        if (!pulledIds.has(article.id)) {
+          candidates.add(article.id);
+        }
+      }
+      reportProgress();
+
+      for (const article of listing.items) {
+        if (pulled >= limit) {
+          limitHit = true;
+          break;
+        }
+        if (pulledIds.has(article.id)) {
+          continue;
+        }
+
+        const filename = chooseFilename(article.title, article.id, names);
+        names.add(filename);
+        const dest = `${WALLABAG_DIR}/${filename}`;
+        const exportUrl =
+          `${withoutTrailingSlashes(config.server_url)}` +
+          `/api/entries/${article.id}/export.epub`;
+
+        try {
+          const outcome = await deps.fetchToSd(exportUrl, dest, authHeaders);
+          const verdict = classifyOutcome(outcome);
+          if (verdict === 'skipped') {
+            skipped += 1;
+          } else if (verdict === 'failed') {
+            failed += 1;
+          } else {
+            pulled += 1;
+          }
+          record(article, filename, verdict);
+        } catch {
+          failed += 1;
+          record(article, filename, 'failed');
+        }
+        reportProgress();
+      }
+
+      if (limitHit) {
+        break;
+      }
+      if (page >= listing.pages) {
+        reachedEnd = true;
+        break;
+      }
+      page += 1;
+    }
+  } finally {
+    await deps.writeFile(
+      SYNC_STATE_PATH,
+      encodeBase64Utf8(JSON.stringify(nextState)),
+    );
+  }
+
+  return { pulled, failed, skipped, reachedEnd, limitHit, interrupted };
+}
+
+export type { CrossPointApi, RelayResponse } from './crossbag';
+
+/**
+ * Register the setup page with the firmware.
  *
  * The firmware injects the `CrossPoint` global before the bundle runs. Where
  * it is absent (Node tests, typecheck, build) this returns immediately, so
@@ -255,5 +1043,3 @@ export function main(): void {
 }
 
 main();
-
-export type { CrossPointApi, RelayResponse } from './crossbag';

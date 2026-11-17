@@ -33,6 +33,7 @@
     "filename": "{title}.epub",
     "headers": {
       "Authorization": "Bearer {token}"
-    }
+    },
+    "sidecar": { "path": "{dest}.meta.json", "body": "{\"book_id\":{id}}" }
   }
 }

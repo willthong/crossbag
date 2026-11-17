@@ -29,6 +29,7 @@ interface RawDevice {
     dest_dir: string;
     filename: string;
     headers?: Record<string, string>;
+    sidecar?: { path: string; body: string };
   };
 }
 
@@ -158,5 +159,39 @@ describe('device catalog', () => {
 
     expect(parsed.browse.headers).toEqual({});
     expect(parsed.download.headers).toEqual({});
+  });
+});
+
+interface Sidecar {
+  path: string;
+  body: string;
+}
+
+describe('download sidecar', () => {
+  const sidecar: Sidecar = {
+    path: '{dest}.meta.json',
+    body: '{"book_id":{id}}',
+  };
+
+  function parsedSidecar(value: unknown): Sidecar | undefined {
+    const parsed = DeviceSchema.parse({
+      ...device,
+      download: { ...device.download, sidecar: value },
+    });
+
+    return parsed.download.sidecar;
+  }
+
+  it('parses a sidecar that names a path and a body', () => {
+    expect(parsedSidecar(sidecar)?.path).toBe('{dest}.meta.json');
+  });
+
+  it('rejects a sidecar with no path', () => {
+    expect(() => parsedSidecar({ body: sidecar.body })).toThrow(/path/i);
+  });
+
+  it('rejects a sidecar with a non-string body', () => {
+    expect(() => parsedSidecar({ path: sidecar.path, body: 42 }))
+      .toThrow(/body/i);
   });
 });

@@ -12,6 +12,7 @@ const ALLOWED_VARIABLES = new Set([
   'url',
   'query',
   'query_raw',
+  'dest',
 ]);
 
 function isAllowedVariable(name: string): boolean {
@@ -19,17 +20,22 @@ function isAllowedVariable(name: string): boolean {
 }
 
 /**
- * Allow literal text plus well-formed `{...}` placeholders. Anything left
- * over after removing valid placeholders (including stray or unclosed braces)
- * makes the template malformed.
+ * Allow literal text plus well-formed `{...}` placeholders. Every placeholder
+ * must name a known variable, and the literal text left once placeholders are
+ * removed must have balanced braces, so JSON bodies such as `{"book_id":{id}}`
+ * are fine while unclosed or stray brace groups are not.
  */
 function hasWellFormedTemplates(value: string): boolean {
-  const remaining = value.replace(
-    TEMPLATE,
-    (match, name: string) => (isAllowedVariable(name) ? '' : match),
+  const malformed = [...value.matchAll(TEMPLATE)].some(
+    (match) => !isAllowedVariable(match[1] ?? ''),
   );
+  if (malformed) return false;
 
-  return !/[{}]/.test(remaining);
+  const remaining = value.replace(TEMPLATE, '');
+  const opens = remaining.split('{').length - 1;
+  const closes = remaining.split('}').length - 1;
+
+  return opens === closes;
 }
 
 export const TemplateStringSchema = z.string().refine(hasWellFormedTemplates, {
@@ -69,6 +75,12 @@ export const DeviceSchema = z.object({
     headers: z.record(z.string(), TemplateStringSchema).optional(),
     dest_dir: z.string(),
     filename: z.string(),
+    sidecar: z
+      .object({
+        path: TemplateStringSchema,
+        body: TemplateStringSchema,
+      })
+      .optional(),
   }),
 });
 

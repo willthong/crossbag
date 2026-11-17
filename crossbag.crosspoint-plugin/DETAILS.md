@@ -17,6 +17,21 @@ Crossbag talks to your own wallabag server over its REST API:
 The on-reader catalog needs no browser: once configured, you browse and
 download entirely from the device.
 
+## Sync (bulk pull)
+
+Sync runs as a button in the browser setup page. It reads the saved
+`config.json`, lists `/Wallabag`, pages through unread articles newest
+first, and downloads up to `sync_limit` new EPUBs (default 50). It skips
+articles already on the card, including catalog pulls recorded in their
+`.meta.json` sidecars, and re-downloads an article whose EPUB was deleted.
+
+`sync-state.json` records every attempt as pulled, skipped, or failed.
+Skipped articles (deleted server-side) are not retried; failed ones are.
+The summary reports each count and warns when the list was not exhausted.
+
+The browser page must stay open while Sync runs: the loop runs in the page,
+not on the device. If `config.json` is missing, save your credentials first.
+
 ## Setup
 
 Run the Crossbag setup wizard once from the device web UI (on your phone or
@@ -27,7 +42,8 @@ computer). Enter:
 - your wallabag username and password
 
 The wizard checks the connection and saves the values to `config.json` on the
-SD card. You never edit raw JSON by hand.
+SD card. You never edit raw JSON by hand. The same page also has **Sync**
+for pulling a batch of unread articles.
 
 ## Requirements
 

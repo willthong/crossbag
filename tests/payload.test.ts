@@ -41,6 +41,7 @@ interface DeviceJson {
     dest_dir: string;
     filename: string;
     headers?: Record<string, string>;
+    sidecar?: { path: string; body: string };
   };
 }
 
@@ -177,5 +178,12 @@ describe('device catalog content', () => {
       .toContain('Bearer {token}');
     expect(raw.download.headers?.Authorization)
       .toContain('Bearer {token}');
+  });
+
+  it('writes the article id beside each catalog download', async () => {
+    const raw = await device();
+
+    expect(raw.download.sidecar?.path).toBe('{dest}.meta.json');
+    expect(raw.download.sidecar?.body).toContain('book_id');
   });
 });

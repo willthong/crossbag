@@ -118,6 +118,16 @@ describe('built plugin.js', () => {
     expect(source).not.toMatch(/\bexport\s/);
     expect(source).not.toContain('require(');
   });
+
+  it('stays under 25 KB and ships no zod runtime', async () => {
+    const source = await readFile(
+      path.join(payloadDir, 'plugin.js'),
+      'utf8',
+    );
+
+    expect(Buffer.byteLength(source)).toBeLessThan(25 * 1024);
+    expect(source).not.toMatch(/\bzod\b/i);
+  });
 });
 
 describe('wallabag api calls', () => {

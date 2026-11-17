@@ -54,6 +54,7 @@ export const WallabagConfigSchema = z.object({
   client_secret: z.string(),
   username: z.string(),
   password: z.string(),
+  sync_limit: z.number().int().min(1).max(500).optional(),
 });
 
 export type WallabagTag = z.infer<typeof WallabagTagSchema>;
