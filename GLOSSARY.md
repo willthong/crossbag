@@ -57,3 +57,20 @@ _Avoid_: Meta file, tag file.
 Sync's walk: page through unread newest-first, skipping already-pulled
 articles, until `sync_limit` new articles land or the list ends.
 _Avoid_: Backfill, catch-up (both imply a schedule this feature lacks).
+
+**Prune**:
+Removing a downloaded EPUB (and its sidecar) from `/Wallabag` when its
+article leaves the unread list upstream — archived or deleted.
+_Avoid_: Clean, purge, reconcile, sync-delete.
+
+**Mirror**:
+The invariant that `/Wallabag` reflects wallabag's unread list in both
+directions: Sync pulls what is newly unread, Prune removes what is no
+longer unread.
+_Avoid_: Sync (overloaded), synchronise.
+
+**Tracked article**:
+An article crossbag has previously recorded — in `sync-state` or a sidecar —
+and therefore the only kind Prune is permitted to delete.
+_Avoid_: Known file, managed file (implies more ownership than the
+presence-aware ledger grants).
