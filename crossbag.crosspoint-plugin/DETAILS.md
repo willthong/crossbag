@@ -40,3 +40,8 @@ SD card. You never edit raw JSON by hand.
 Article listing expects wallabag to return its items under `_embedded.items`,
 which is wallabag's standard API response shape. If your server or a proxy
 rewrites that structure, the catalog may show no articles.
+
+## License
+
+MIT. Crossbag is free software; you may redistribute and modify it under the
+terms of the MIT licence. Source: https://github.com/willthong/crossbag

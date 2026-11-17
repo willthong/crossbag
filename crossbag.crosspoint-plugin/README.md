@@ -12,3 +12,5 @@ Daily use
 
 Open the Crossbag catalog on the reader, browse your unread articles newest
 first, and pick one. It downloads to /Wallabag as an EPUB.
+
+Licence: MIT. Source: github.com/willthong/crossbag

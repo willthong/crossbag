@@ -1,5 +1,11 @@
 # Crossbag
 
+[![CI](https://github.com/willthong/crossbag/actions/workflows/ci.yml/badge.svg)](https://github.com/willthong/crossbag/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-88%25-brightgreen)](https://github.com/willthong/crossbag/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-339933)](package.json)
+[![Plugin Hub](https://img.shields.io/badge/Plugin%20Hub-compatible-blueviolet)](https://github.com/crosspoint-reader/crosspoint-plugin-hub)
+
 Crossbag pulls your unread [wallabag](https://wallabag.org) articles onto a
 CrossPoint e-reader as EPUBs, so you can read them offline.
 
@@ -9,6 +15,10 @@ It has two parts:
   server and account.
 - **On-reader catalog** — a firmware screen that browses unread articles and
   downloads them as EPUBs, with no browser involved.
+
+The payload is model-agnostic: it works the same on an Xteink X3, X4, X4Pro,
+or any other CrossPoint device. Crossbag downloads EPUBs, not images, so it
+needs no per-resolution variants.
 
 See [docs/SPEC.md](docs/SPEC.md) for the full design.
 
@@ -40,11 +50,22 @@ on-reader catalog works without a browser.
 ## Develop
 
 ```sh
-pnpm install   # install dependencies (Node >= 22)
-pnpm run check # typecheck + lint + tests
-pnpm run build # bundle src/plugin.ts into the payload's plugin.js
+pnpm install        # install dependencies (Node >= 22)
+pnpm run check      # typecheck + lint + tests
+pnpm run test:coverage  # tests with coverage (thresholds enforced)
+pnpm run build      # bundle src/plugin.ts into the payload's plugin.js
 ```
 
 The publishable payload lives in `crossbag.crosspoint-plugin/`. Run
 `pnpm run check && pnpm run build` before committing so `plugin.js` stays in
-sync with source.
+sync with source; CI rebuilds and fails on any drift.
+
+### Coverage
+
+CI enforces floors of 85% statements/lines/functions and 70% branches; the
+badge above shows the current measured figure. Raising coverage raises the
+number, and the floors stop it regressing silently.
+
+## License
+
+[MIT](LICENSE) © 2026 Will Thong
