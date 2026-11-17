@@ -1,0 +1,38 @@
+{
+  "title": "Crossbag",
+  "config": { "file": "config.json" },
+  "auth": {
+    "request": {
+      "method": "POST",
+      "url": "{cfg.server_url}/oauth/v2/token",
+      "headers": {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      "body": "grant_type=password&client_id={cfg.client_id}&client_secret={cfg.client_secret}&username={cfg.username}&password={cfg.password}"
+    },
+    "token": { "path": "access_token" }
+  },
+  "browse": {
+    "format": "json",
+    "url": "{cfg.server_url}/api/entries?archive=0&sort=created&order=desc&page={page}&perPage={limit}",
+    "items": "_embedded.items",
+    "page_size": 8,
+    "headers": {
+      "Authorization": "Bearer {token}"
+    },
+    "fields": {
+      "title": "title",
+      "author": "domain_name",
+      "id": "id",
+      "url": "url"
+    }
+  },
+  "download": {
+    "url": "{cfg.server_url}/api/entries/{id}/export.epub",
+    "dest_dir": "/Wallabag",
+    "filename": "{title}.epub",
+    "headers": {
+      "Authorization": "Bearer {token}"
+    }
+  }
+}

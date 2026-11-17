@@ -22,7 +22,11 @@ The module must:
    - Username (text input)
    - Password (password input)
 3. "Test Connection" button:
+   - Posts the OAuth2 password grant to
+     `serverUrl + "/oauth/v2/token"` via `api.relay("POST", ...)` and reads
+     `access_token` from the response (see ADR 0001)
    - Calls `api.relay("GET", serverUrl + "/api/entries?perPage=1", {...})`
+     with `Authorization: Bearer <token>` as the second step
    - Shows success/failure inline
 4. "Save" button:
    - Builds a `config.json` object from form fields
