@@ -58,15 +58,21 @@ Sync's walk: page through unread newest-first, skipping already-pulled
 articles, until `sync_limit` new articles land or the list ends.
 _Avoid_: Backfill, catch-up (both imply a schedule this feature lacks).
 
+**Favourite**:
+A wallabag article the user has starred (`is_starred`). Independent of
+unread/archived state, so a favourite may be unread or archived.
+_Avoid_: Starred (wallabag's name — use "favourite" in our domain).
+
 **Prune**:
 Removing a downloaded EPUB (and its sidecar) from `/Wallabag` when its
-article leaves the unread list upstream — archived or deleted.
+article falls out of the mirror — archived or deleted upstream, except an
+archived favourite is kept while `sync_favourites` is on.
 _Avoid_: Clean, purge, reconcile, sync-delete.
 
 **Mirror**:
-The invariant that `/Wallabag` reflects wallabag's unread list in both
-directions: Sync pulls what is newly unread, Prune removes what is no
-longer unread.
+The invariant that `/Wallabag` reflects what is unread upstream, plus
+favourites when `sync_favourites` is enabled. Sync pulls what newly belongs;
+Prune removes what no longer does.
 _Avoid_: Sync (overloaded), synchronise.
 
 **Tracked article**:
