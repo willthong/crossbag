@@ -28,6 +28,79 @@ Crossbag is published through **Plugin Hub**, the CrossPoint SD-card plugin.
 On your device, open Plugin Hub and install Crossbag from the Community
 Plugins catalog. Plugin Hub handles updates too.
 
+### Install locally (testing before publication)
+
+While crossbag is not yet in Plugin Hub, sideload it from source. No release or
+tag is needed — firmware loads any plugin folder on the SD card.
+
+**1. Build the bundle.** The committed `plugin.js` is current, but build if
+you have changed anything:
+
+```sh
+pnpm install
+pnpm run build
+```
+
+**2. Copy the payload to the card.** Power the reader off, eject the SD card,
+and mount it on your computer. The folder must end up at `plugins/crossbag/`:
+
+```sh
+# macOS: the card is usually /Volumes/<name>
+# Linux:  usually /media/$USER/<name>
+mkdir -p /Volumes/<card>/plugins
+cp -R crossbag.crosspoint-plugin /Volumes/<card>/plugins/crossbag
+```
+
+Two things trip people up here:
+
+- the folder must be named **`crossbag`** (the plugin ID from
+  `manifest.json`), **not** `crossbag.crosspoint-plugin`. Copy the *contents*
+  of the payload directory into it, which is what `cp -R src dst` does when
+  `dst` does not exist yet.
+- create `plugins/` yourself if it is missing.
+
+CrossPoint scans `/.crosspoint/plugins`, `/plugins`, and `/.plugins` on every
+boot, earlier roots winning. `/plugins` is the dot-free option, which is why
+it is the easiest to create from a card reader — the web UI rejects some
+dot-prefixed path operations.
+
+**3. Enable and open.** Back on the reader:
+
+1. **Settings → Connectivity → Plugins** → **Enabled**
+2. **Home → Plugins → Crossbag**
+
+If Crossbag does not appear, the folder name, the nesting depth, or the
+Plugins setting is wrong — the payload files must sit directly in
+`plugins/crossbag/`, not one level deeper.
+
+**Sideloading over Wi-Fi instead.** With **File Transfer** running, use the web
+UI File Manager (or WebDAV, or `POST /upload`) to create `plugins/crossbag` on
+the card and upload the five payload files. `POST /mkdir` takes `name` and
+`path` if you prefer the API. This avoids pulling the card, at the cost of
+uploading files one at a time.
+
+**Updating a sideloaded copy.** Overwrite the files in `plugins/crossbag/` with
+the new payload, then reboot or re-enter **Home → Plugins**. Delete the folder
+to uninstall, or hold **Confirm** on its row for one second (long-press on
+touch devices) to use the on-device uninstall.
+
+### Local test checklist
+
+Before publishing, confirm on hardware:
+
+- [ ] **Home → Plugins** lists Crossbag with its title and description
+- [ ] the wizard card appears on the web UI **Plugins** page (`/plugins`)
+- [ ] **Test Connection** succeeds against your wallabag server
+- [ ] `config.json` is written to `plugins/crossbag/` after **Save**
+- [ ] the catalog lists your unread articles, newest first, 8 per page
+- [ ] downloading one produces an EPUB in `/Wallabag`
+- [ ] the EPUB opens and renders in the reader
+
+If the catalog lists nothing, check the `_embedded.items` assumption noted in
+`DETAILS.md`: run `curl -H "Authorization: Bearer <token>" \
+'<server>/api/entries?archive=0'` and confirm the articles really are nested
+there.
+
 ## Set up once
 
 Credentials are configured in a browser, once. You never edit configuration by
