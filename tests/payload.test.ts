@@ -80,6 +80,17 @@ describe('plugin payload', () => {
     expect(() => ManifestSchema.parse(manifest)).not.toThrow();
   });
 
+  it('mounts the setup wizard on the web UI Plugins page', async () => {
+    const dir = await payloadDir();
+    const manifest = await readJson<unknown>(
+      path.join(dir, 'manifest.json'),
+    );
+
+    // mount defaults to "settings", which renders the card on /plugins.
+    // Declare it explicitly so the wizard's location is never implicit.
+    expect(ManifestSchema.parse(manifest).mount).toBe('settings');
+  });
+
   it('declares only payload files that exist on disk', async () => {
     const dir = await payloadDir();
     const manifest = await readJson<ManifestJson>(

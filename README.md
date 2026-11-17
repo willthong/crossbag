@@ -30,16 +30,71 @@ Plugins catalog. Plugin Hub handles updates too.
 
 ## Set up once
 
-1. Create a wallabag API client under *Developer → API clients* in your
-   wallabag settings. Note the client ID and client secret.
-2. Open the device web UI on your phone or computer and run the **Crossbag**
-   setup wizard.
-3. Enter your wallabag server URL, the client ID and secret, and your
-   wallabag username and password.
-4. Choose **Test Connection**, then **Save**. The wizard writes `config.json`
-   to the SD card.
+Credentials are configured in a browser, once. You never edit configuration by
+hand.
 
-You never edit configuration by hand.
+### 1. Enable the plugin system
+
+On the device, go to **Settings → Connectivity → Plugins** and set it to
+**Enabled**. Clean installs ship with plugins disabled, and nothing below is
+reachable until this is on. Enabling it also adds **Plugins** to the Home
+screen.
+
+Plugin support requires a CrossPoint build that ships the plugin system
+(2.0.0 release candidate or newer). If **Home → Plugins** never appears, your
+firmware predates it.
+
+### 2. Start the web server
+
+From the Home screen, open **File Transfer**, then pick one of the modes below.
+The web server only runs while the device is in **File Transfer** or
+**Calibre Wireless** mode, so the browser page will not load otherwise.
+
+| Mode | Use when |
+|------|----------|
+| **Join Network** | The device and your phone/computer share a Wi-Fi network |
+| **Create Hotspot** | You have no shared network; the device hosts its own |
+
+**Join Network** connects to a 2.4 GHz network. When it connects, the screen
+shows the SSID, a QR code for the URL, the direct IP URL (for example
+`http://192.168.1.102/`), and the mDNS fallback `http://crosspoint.local/`.
+
+**Create Hotspot** publishes an open network called `CrossPoint-Reader`.
+Join it from your phone or computer, then open the URL shown on the reader —
+`http://crosspoint.local/` where supported, otherwise `http://192.168.4.1/`.
+
+Scanning the QR code with your phone is the quickest route in either mode.
+
+### 3. Create a wallabag API client
+
+In your wallabag web interface, open *Developer → API clients* and create a
+client. Note the **client ID** and **client secret**. Crossbag authenticates
+with the password grant, so your wallabag username and password are also
+needed.
+
+### 4. Open the wizard
+
+In the browser, open the device URL and go to the **Plugins** page
+(`http://<device-ip>/plugins`). Crossbag appears there because `manifest.json`
+declares `"mount": "settings"`. Select it to open the setup wizard.
+
+> The device web server has no authentication. Use it only on a network you
+trust, and prefer **Create Hotspot** on public Wi-Fi.
+
+### 5. Fill in and save
+
+Enter your wallabag **server URL**, the **client ID** and **secret**, and your
+**wallabag username and password**. Choose **Test Connection** — the wizard
+requests an OAuth2 token and then fetches one article page to prove the
+credentials work — then choose **Save**. The wizard writes `config.json` into
+the plugin folder on the SD card.
+
+Your `config.json` is stored unencrypted on the SD card, including the client
+secret and your wallabag password. Treat the card as sensitive.
+
+### 6. Back to the reader
+
+Exit **File Transfer** and open **Home → Plugins → Crossbag**.
 
 ## Use on the device
 

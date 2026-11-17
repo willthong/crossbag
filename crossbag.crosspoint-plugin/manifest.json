@@ -4,6 +4,7 @@
   "description": "Pull wallabag articles onto your device as EPUBs",
   "author": "Will Thong",
   "version": "0.1.0",
+  "mount": "settings",
   "compatibility": {
     "firmware_family": ["crosspoint"],
     "plugin_api_min": 1
