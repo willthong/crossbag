@@ -18,6 +18,9 @@
   ("the device could not reach the server — check the server URL and that the
   reader is online") instead of passing on the device's "large bodies need
   /api/fetch" message.
+- Fix: write `config.json` and `sync-state.json` under the plugin's own folder
+  (`api.dir`) instead of a bare relative name. The device's `/api/plugin-fs`
+  accepts only absolute paths and rejected Save with `400 bad path`.
 - Fix: ask wallabag for `detail=metadata` in the Test Connection request so a
   full article body no longer overflows the ~32 KB relay cap and fails with a
   misleading 502. The size-cap message is now reported as a too-large reply

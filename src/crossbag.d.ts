@@ -13,6 +13,8 @@ export interface RelayResponse {
 
 export interface CrossPointApi {
   name: string;
+  /** Absolute SD path of the plugin's own folder, for files it owns. */
+  dir: string;
   relay(
     method: string,
     url: string,

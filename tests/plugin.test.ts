@@ -7,6 +7,7 @@ import {
   buildTestRequest,
   buildTokenRequest,
   encodeBase64Utf8,
+  pluginFilePath,
   renderForm,
   serverUrlProblem,
   type FetchLike,
@@ -14,6 +15,8 @@ import {
   type SyncApi,
   type SyncDeps,
 } from '../src/plugin';
+
+const PLUGIN_DIR = '/.crosspoint/plugins/crossbag';
 
 const formValues: SetupFormValues = {
   serverUrl: 'https://wallabag.example.com/',
@@ -27,6 +30,7 @@ const formValues: SetupFormValues = {
 function makeApi(relayResponse: RelayResponse = { status: 200, body: '{}' }) {
   return {
     name: 'crossbag',
+    dir: PLUGIN_DIR,
     relay: vi.fn<CrossPointApi['relay']>(async () => relayResponse),
     writeFile: vi.fn<CrossPointApi['writeFile']>(async () => undefined),
   } satisfies CrossPointApi;
@@ -162,6 +166,24 @@ describe('setup wizard server URL check', () => {
   });
 });
 
+describe('pluginFilePath', () => {
+  it('resolves bare names under the plugin dir and keeps absolute paths', () => {
+    expect(pluginFilePath('/plugins/crossbag', 'config.json')).toBe(
+      '/plugins/crossbag/config.json',
+    );
+    expect(pluginFilePath(undefined, '/Wallabag/a.epub')).toBe(
+      '/Wallabag/a.epub',
+    );
+  });
+
+  it('explains a firmware without api.dir instead of sending a broken path', () => {
+    expect(() => pluginFilePath(undefined, 'config.json')).toThrow(
+      /api\.dir/,
+    );
+    expect(() => pluginFilePath('', 'config.json')).toThrow(/api\.dir/);
+  });
+});
+
 describe('setup wizard form', () => {
   it('renders one input per config field plus both action buttons', () => {
     const container = document.createElement('div');
@@ -206,7 +228,7 @@ describe('setup wizard form', () => {
       Buffer.from(payload, 'base64').toString('utf8'),
     ) as Record<string, string>;
 
-    expect(writtenPath).toBe('config.json');
+    expect(writtenPath).toBe(`${PLUGIN_DIR}/config.json`);
     expect(written).toEqual({
       server_url: 'https://wallabag.example.com',
       client_id: 'crossbag-client',
@@ -361,6 +383,7 @@ function makeSequencedApi(responses: RelayResponse[]) {
 
   return {
     name: 'crossbag',
+    dir: PLUGIN_DIR,
     relay,
     writeFile: vi.fn<CrossPointApi['writeFile']>(async () => undefined),
   } satisfies CrossPointApi;
@@ -560,6 +583,7 @@ function makeSyncRelay(scenario: SyncScenario): CrossPointApi['relay'] {
 function makeSyncApi(scenario: SyncScenario) {
   return {
     name: 'crossbag',
+    dir: PLUGIN_DIR,
     relay: vi.fn<CrossPointApi['relay']>(makeSyncRelay(scenario)),
     fetchToSd: vi.fn<SyncDeps['fetchToSd']>(async () => ({
       status: 200,
@@ -644,7 +668,7 @@ function makeSyncFetch(options: SyncMountOptions): FetchLike {
     }
 
     const path = decodeURIComponent(url.slice(prefix.length));
-    if (path === 'config.json') {
+    if (path === `${PLUGIN_DIR}/config.json`) {
       if (options.configBody !== undefined) {
         return textResponse(options.configBody);
       }
@@ -652,7 +676,10 @@ function makeSyncFetch(options: SyncMountOptions): FetchLike {
         ? textResponse('', 404)
         : textResponse(JSON.stringify(savedConfig));
     }
-    if (path === 'sync-state.json' && options.syncState !== undefined) {
+    if (
+      path === `${PLUGIN_DIR}/sync-state.json` &&
+      options.syncState !== undefined
+    ) {
       return textResponse(JSON.stringify(options.syncState));
     }
     return textResponse('', 404);
@@ -709,7 +736,10 @@ describe('buildSyncDeps', () => {
     );
 
     await deps.writeFile('sync-state.json', 'eyJ9');
-    expect(api.writeFile).toHaveBeenCalledWith('sync-state.json', 'eyJ9');
+    expect(api.writeFile).toHaveBeenCalledWith(
+      `${PLUGIN_DIR}/sync-state.json`,
+      'eyJ9',
+    );
 
     const names = await deps.listFiles('/Wallabag');
 
@@ -843,7 +873,8 @@ describe('setup wizard Sync', () => {
     expect(summary).toContain('0 skipped (deleted server-side)');
     expect(downloaded).toEqual([1, 2]);
     expect(api.fetchToSd).toHaveBeenCalledTimes(2);
-    expect(api.writeFile.mock.calls[0]?.[0]).toBe('sync-state.json');
+    expect(api.writeFile.mock.calls[0]?.[0])
+      .toBe(`${PLUGIN_DIR}/sync-state.json`);
   });
 
   it('warns that more unread articles remain when the limit is hit', async () => {

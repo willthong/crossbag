@@ -341,7 +341,7 @@ async function saveConfig(
   const payload = encodeBase64Utf8(JSON.stringify(config));
 
   try {
-    await api.writeFile('config.json', payload);
+    await api.writeFile(pluginFilePath(api.dir, CONFIG_PATH), payload);
     setAlert(
       alert,
       'Credentials saved. Switch to your device to browse articles.',
@@ -661,6 +661,7 @@ export interface SyncResult {
 /** Firmware handles Sync needs from `api`, beyond the setup-wizard surface. */
 export interface SyncApi {
   name: string;
+  dir: CrossPointApi['dir'];
   relay: CrossPointApi['relay'];
   fetchToSd: SyncDeps['fetchToSd'];
   writeFile: CrossPointApi['writeFile'];
@@ -706,6 +707,30 @@ function fileNamesFromListing(payload: unknown): string[] {
   return names;
 }
 
+/**
+ * Resolve a plugin-owned file name against the plugin's own SD folder.
+ * Device-absolute paths (sidecars under `/Wallabag`) pass through unchanged;
+ * `writeFile` requires an absolute path, so bare names cannot be sent as-is.
+ *
+ * A missing `api.dir` means the firmware predates it: throwing here beats
+ * sending `undefined/config.json`, which the device rejects as `bad path`.
+ */
+export function pluginFilePath(
+  pluginDir: string | undefined,
+  name: string,
+): string {
+  if (name.startsWith('/')) {
+    return name;
+  }
+  if (pluginDir === undefined || pluginDir === '') {
+    throw new Error(
+      'The device API did not provide a plugin directory (api.dir); ' +
+        'update the firmware to 2.0.0rc or newer.',
+    );
+  }
+  return `${pluginDir}/${name}`;
+}
+
 /** Wire the firmware `api` and the page's `fetch` into SyncDeps. */
 export function buildSyncDeps(api: SyncApi, fetchImpl: FetchLike): SyncDeps {
   return {
@@ -714,7 +739,7 @@ export function buildSyncDeps(api: SyncApi, fetchImpl: FetchLike): SyncDeps {
     },
     fetchToSd: (url, dest, headers) => api.fetchToSd(url, dest, headers),
     writeFile: async (path, dataB64) => {
-      await api.writeFile(path, dataB64);
+      await api.writeFile(pluginFilePath(api.dir, path), dataB64);
       return { ok: true };
     },
     listFiles: async (path) => {
@@ -726,7 +751,8 @@ export function buildSyncDeps(api: SyncApi, fetchImpl: FetchLike): SyncDeps {
       return fileNamesFromListing(await response.json());
     },
     readFile: async (path) => {
-      const url = `/download?path=${encodeURIComponent(path)}`;
+      const url =
+        `/download?path=${encodeURIComponent(pluginFilePath(api.dir, path))}`;
       const response = await fetchImpl(url);
       if (!response.ok) {
         throw new Error(`Could not read ${path} (HTTP ${response.status}).`);

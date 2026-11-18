@@ -218,7 +218,7 @@
     const config = buildConfig(values);
     const payload = encodeBase64Utf8(JSON.stringify(config));
     try {
-      await api.writeFile("config.json", payload);
+      await api.writeFile(pluginFilePath(api.dir, CONFIG_PATH), payload);
       setAlert(
         alert,
         "Credentials saved. Switch to your device to browse articles."
@@ -428,6 +428,17 @@
     }
     return names;
   }
+  function pluginFilePath(pluginDir, name) {
+    if (name.startsWith("/")) {
+      return name;
+    }
+    if (pluginDir === void 0 || pluginDir === "") {
+      throw new Error(
+        "The device API did not provide a plugin directory (api.dir); update the firmware to 2.0.0rc or newer."
+      );
+    }
+    return `${pluginDir}/${name}`;
+  }
   function buildSyncDeps(api, fetchImpl) {
     return {
       relay: async (method, url, headers, body) => {
@@ -435,7 +446,7 @@
       },
       fetchToSd: (url, dest, headers) => api.fetchToSd(url, dest, headers),
       writeFile: async (path, dataB64) => {
-        await api.writeFile(path, dataB64);
+        await api.writeFile(pluginFilePath(api.dir, path), dataB64);
         return { ok: true };
       },
       listFiles: async (path) => {
@@ -447,7 +458,7 @@
         return fileNamesFromListing(await response.json());
       },
       readFile: async (path) => {
-        const url = `/download?path=${encodeURIComponent(path)}`;
+        const url = `/download?path=${encodeURIComponent(pluginFilePath(api.dir, path))}`;
         const response = await fetchImpl(url);
         if (!response.ok) {
           throw new Error(`Could not read ${path} (HTTP ${response.status}).`);
