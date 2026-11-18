@@ -36,7 +36,7 @@ the toggle's only *additional* effect is to pull archived favourites.
 
 - The unread walk is unchanged (`archive=0`).
 - When `sync_favourites` is on, add a second walk:
-  `starred=1&sort=created&order=desc&detail=metadata&page={n}&perPage=16`,
+  `starred=1&sort=created&order=desc&detail=metadata&page={n}&perPage=8`,
   with the bearer token.
 - **Union by article id** and dedupe through the existing presence-aware
   ledger — a starred unread article must download once, not twice.

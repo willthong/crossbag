@@ -302,7 +302,7 @@ describe('runSync device files', () => {
 });
 
 describe('runSync paging', () => {
-  it('pages unread metadata entries 16 at a time', async () => {
+  it('pages unread metadata entries 8 at a time', async () => {
     const harness = makeHarness({ pages: [[1], [2]] });
 
     await runSync(harness.deps, configWithLimit(5));
@@ -316,7 +316,7 @@ describe('runSync paging', () => {
       expect(url.pathname).toBe('/api/entries');
       expect(url.searchParams.get('archive')).toBe('0');
       expect(url.searchParams.get('detail')).toBe('metadata');
-      expect(url.searchParams.get('perPage')).toBe('16');
+      expect(url.searchParams.get('perPage')).toBe('8');
     }
 
     expect(urls.map((url) => url.searchParams.get('page'))).toEqual(['1', '2']);
@@ -338,6 +338,7 @@ describe('runSync truncated paging', () => {
       interrupted: true,
       reachedEnd: false,
       limitHit: false,
+      stopReason: 'connection reset',
     });
   });
 
@@ -350,8 +351,43 @@ describe('runSync truncated paging', () => {
 
     const result = await runSync(harness.deps, configWithLimit(5));
 
-    expect(result).toMatchObject({ pulled: 1, interrupted: true });
+    expect(result).toMatchObject({
+      pulled: 1,
+      interrupted: true,
+      stopReason: 'page 2: HTTP 503',
+    });
     expect(result.reachedEnd).toBe(false);
+  });
+
+  it('retries at a smaller page size when the relay rejects the reply', async () => {
+    const harness = makeHarness({ pages: [[1, 2, 3, 4]] });
+    harness.relay.mockImplementation(async (_method, url) => {
+      if (url.endsWith('/oauth/v2/token')) {
+        return { status: 200, body: tokenResponse() };
+      }
+
+      const perPage = Number(new URL(url).searchParams.get('perPage'));
+      if (perPage > 4) {
+        throw new Error(
+          '/api/relay 502: relay failed; large bodies need /api/fetch',
+        );
+      }
+
+      const page = readPageNumber(url);
+      const start = (page - 1) * perPage;
+      return {
+        status: 200,
+        body: entriesPage([1, 2, 3, 4].slice(start, start + perPage), {
+          page,
+          pages: 1,
+        }),
+      };
+    });
+
+    const result = await runSync(harness.deps, configWithLimit(10));
+
+    expect(result).toMatchObject({ pulled: 4, interrupted: false });
+    expect(harness.fetchCalls.map((call) => call.id)).toEqual([1, 2, 3, 4]);
   });
 });
 

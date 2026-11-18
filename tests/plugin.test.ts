@@ -551,7 +551,7 @@ interface SyncScenario {
 }
 
 function entriesBody(ids: number[], page: number): string {
-  const perPage = 16;
+  const perPage = 8;
   const start = (page - 1) * perPage;
   const items = ids
     .slice(start, start + perPage)
@@ -918,6 +918,7 @@ describe('setup wizard Sync', () => {
       const text = syncStatus(container).textContent ?? '';
       expect(text).toContain('1 pulled');
       expect(text).toContain('did not reach the end of the list.');
+      expect(text).toContain('Reason: page 2: HTTP 503');
       expect(text).not.toContain('more unread articles remain');
     });
   });

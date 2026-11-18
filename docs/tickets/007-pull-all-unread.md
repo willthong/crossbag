@@ -48,8 +48,10 @@ as a browser action. It uses the same page as the setup wizard.
    An id counts as pulled **only if its saved filename is still present** in
    the listing (presence-aware dedupe — a deleted EPUB re-downloads).
 5. **Page** through `GET /api/entries?archive=0&detail=metadata&sort=created
-   &order=desc&page={n}&perPage=16` with the bearer token, newest first.
-   `detail=metadata` keeps each page under the ~32 KB `relay` cap.
+   &order=desc&page={n}&perPage=8` with the bearer token, newest first.
+   `detail=metadata` at 8/page matches the catalog and leaves headroom under
+   the ~32 KB `relay` cap. If the device still rejects a page, Sync retries
+   the walk at half the page size before reporting the relay's reason.
 6. For each unread article not already pulled, **download** via
    `api.fetchToSd` from `/api/entries/{id}/export.epub` into `/Wallabag/`, with
    the bearer header.
@@ -111,7 +113,8 @@ Model `download.sidecar` in `DeviceSchema`.
 
 - `GET /api/files?path=...` returns `[{name,size,isDirectory,isEpub}]`;
   hidden dotfiles are omitted.
-- `detail=metadata` in wallabag entry listing keeps pages within the relay cap.
+- `detail=metadata` at 8/page keeps list pages within the ~32 KB relay cap;
+  a page over the cap surfaces as a relay 502.
 - `api.fetchToSd` does **not** follow redirects — confirm `/export.epub`
   returns the EPUB directly (hardware-test item).
 - The browser page must stay open while Sync runs (documented firmware limit).

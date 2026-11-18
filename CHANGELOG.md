@@ -3,6 +3,14 @@
 ## 0.1.0
 
 - Initial release: setup wizard, on-reader catalog, and EPUB download.
+- Fix: Sync asked wallabag for 16 metadata entries per page, but a page can
+  exceed the device relay's ~32 KB cap (wallabag includes each article's URLs,
+  tags, annotations and original HTTP headers even with `detail=metadata`).
+  The relay then answered 502 and Sync reported `0 pulled · 0 failed ·
+  0 skipped` with no cause. Pages are now 8 entries, matching the on-reader
+  catalog, and a rejected page retries at half the size. If paging still
+  stops, the summary names the reason instead of only saying the list was
+  not exhausted.
 - Fix: form-encode the on-reader token request so `&` and `+` in a wallabag
   password or client secret no longer break sign-in.
 - Fix: surface wallabag's OAuth2 error (`invalid_client`, `invalid_grant`) in

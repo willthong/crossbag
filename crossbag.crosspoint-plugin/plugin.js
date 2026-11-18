@@ -246,6 +246,9 @@
     }
     if (result.interrupted) {
       summary += " \u2014 the sync did not reach the end of the list.";
+      if (result.stopReason !== void 0) {
+        summary += ` Reason: ${result.stopReason}`;
+      }
     }
     return summary;
   }
@@ -470,7 +473,8 @@
   var WALLABAG_DIR = "/Wallabag";
   var SYNC_STATE_PATH = "sync-state.json";
   var CONFIG_PATH = "config.json";
-  var ENTRIES_PER_PAGE = 16;
+  var ENTRIES_PER_PAGE = 8;
+  var MIN_ENTRIES_PER_PAGE = 1;
   function configValues(config) {
     return {
       serverUrl: config.server_url,
@@ -518,14 +522,14 @@
     }
     return token;
   }
-  function buildEntriesUrl(serverUrl, page) {
+  function buildEntriesUrl(serverUrl, page, perPage = ENTRIES_PER_PAGE) {
     const params = new URLSearchParams({
       archive: "0",
       detail: "metadata",
       sort: "created",
       order: "desc",
       page: String(page),
-      perPage: String(ENTRIES_PER_PAGE)
+      perPage: String(perPage)
     });
     return `${normalizeServerUrl(serverUrl)}/api/entries?${params.toString()}`;
   }
@@ -681,9 +685,11 @@
     let failed = 0;
     let skipped = 0;
     let page = 1;
+    let pageSize = ENTRIES_PER_PAGE;
     let reachedEnd = false;
     let limitHit = false;
     let interrupted = false;
+    let stopReason;
     const record = (article, filename, status) => {
       nextState.articles[String(article.id)] = { filename, status };
     };
@@ -701,21 +707,35 @@
           limitHit = true;
           break;
         }
-        const url = buildEntriesUrl(config.server_url, page);
+        const url = buildEntriesUrl(config.server_url, page, pageSize);
         let response;
         try {
           response = await deps.relay("GET", url, authHeaders);
-        } catch {
+        } catch (error) {
+          if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
+            pageSize = Math.max(
+              MIN_ENTRIES_PER_PAGE,
+              Math.floor(pageSize / 2)
+            );
+            page = 1;
+            continue;
+          }
           interrupted = true;
+          stopReason = describeRelayFailure(error);
           break;
         }
         if (!isOk(response.status)) {
           interrupted = true;
+          stopReason = `page ${page}: ${describeHttpFailure(
+            response.status,
+            response.body
+          )}`;
           break;
         }
         const listing = parseEntriesPage(response.body);
         if (listing === void 0) {
           interrupted = true;
+          stopReason = `page ${page}: the entries listing could not be read`;
           break;
         }
         if (listing.items.length === 0) {
@@ -755,6 +775,7 @@
             failed += 1;
             record(article, filename, "failed");
           }
+          pulledIds.add(article.id);
           reportProgress();
         }
         if (limitHit) {
@@ -772,7 +793,15 @@
         encodeBase64Utf8(JSON.stringify(nextState))
       );
     }
-    return { pulled, failed, skipped, reachedEnd, limitHit, interrupted };
+    return {
+      pulled,
+      failed,
+      skipped,
+      reachedEnd,
+      limitHit,
+      interrupted,
+      stopReason
+    };
   }
   function main() {
     const crossPoint = globalThis.CrossPoint;

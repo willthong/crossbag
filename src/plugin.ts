@@ -383,6 +383,9 @@ function summarize(result: SyncResult): string {
   }
   if (result.interrupted) {
     summary += ' — the sync did not reach the end of the list.';
+    if (result.stopReason !== undefined) {
+      summary += ` Reason: ${result.stopReason}`;
+    }
   }
 
   return summary;
@@ -656,6 +659,8 @@ export interface SyncResult {
   reachedEnd: boolean;
   limitHit: boolean;
   interrupted: boolean;
+  /** Why paging stopped early, when interrupted. */
+  stopReason?: string;
 }
 
 /** Firmware handles Sync needs from `api`, beyond the setup-wizard surface. */
@@ -765,7 +770,12 @@ export function buildSyncDeps(api: SyncApi, fetchImpl: FetchLike): SyncDeps {
 const WALLABAG_DIR = '/Wallabag';
 const SYNC_STATE_PATH = 'sync-state.json';
 const CONFIG_PATH = 'config.json';
-const ENTRIES_PER_PAGE = 16;
+// The device relay buffers a whole reply in RAM and refuses anything over
+// 32 KB. A wallabag metadata entry carries URLs, annotations, tags and the
+// article's original HTTP headers, so 16 per page can overflow. The on-reader
+// catalog uses 8/page for the same listing; match it to leave headroom.
+const ENTRIES_PER_PAGE = 8;
+const MIN_ENTRIES_PER_PAGE = 1;
 
 /** An unread article as Sync needs it: an id and a title. */
 interface SyncArticle {
@@ -841,14 +851,18 @@ async function obtainToken(
 }
 
 /** Build the metadata-only listing URL for one page of unread articles. */
-function buildEntriesUrl(serverUrl: string, page: number): string {
+function buildEntriesUrl(
+  serverUrl: string,
+  page: number,
+  perPage: number = ENTRIES_PER_PAGE,
+): string {
   const params = new URLSearchParams({
     archive: '0',
     detail: 'metadata',
     sort: 'created',
     order: 'desc',
     page: String(page),
-    perPage: String(ENTRIES_PER_PAGE),
+    perPage: String(perPage),
   });
 
   return `${normalizeServerUrl(serverUrl)}/api/entries?${params.toString()}`;
@@ -1050,9 +1064,11 @@ export async function runSync(
   let failed = 0;
   let skipped = 0;
   let page = 1;
+  let pageSize = ENTRIES_PER_PAGE;
   let reachedEnd = false;
   let limitHit = false;
   let interrupted = false;
+  let stopReason: string | undefined;
 
   const record = (
     article: SyncArticle,
@@ -1078,23 +1094,44 @@ export async function runSync(
         break;
       }
 
-      const url = buildEntriesUrl(config.server_url, page);
+      const url = buildEntriesUrl(config.server_url, page, pageSize);
       let response: { status: number; body: string };
       try {
         response = await deps.relay('GET', url, authHeaders);
-      } catch {
+      } catch (error) {
+        // The device's relay rejects a reply it cannot buffer (over ~32 KB)
+        // with a 502. Metadata pages can still cross that line, so retry the
+        // walk at half the page size before giving up. Attempted ids stay in
+        // `pulledIds`, so a retry neither re-downloads nor double-counts.
+        if (
+          pageSize > MIN_ENTRIES_PER_PAGE &&
+          describeError(error).includes('large bodies')
+        ) {
+          pageSize = Math.max(
+            MIN_ENTRIES_PER_PAGE,
+            Math.floor(pageSize / 2),
+          );
+          page = 1;
+          continue;
+        }
         interrupted = true;
+        stopReason = describeRelayFailure(error);
         break;
       }
 
       if (!isOk(response.status)) {
         interrupted = true;
+        stopReason = `page ${page}: ${describeHttpFailure(
+          response.status,
+          response.body,
+        )}`;
         break;
       }
 
       const listing = parseEntriesPage(response.body);
       if (listing === undefined) {
         interrupted = true;
+        stopReason = `page ${page}: the entries listing could not be read`;
         break;
       }
       if (listing.items.length === 0) {
@@ -1140,6 +1177,7 @@ export async function runSync(
           failed += 1;
           record(article, filename, 'failed');
         }
+        pulledIds.add(article.id);
         reportProgress();
       }
 
@@ -1159,7 +1197,15 @@ export async function runSync(
     );
   }
 
-  return { pulled, failed, skipped, reachedEnd, limitHit, interrupted };
+  return {
+    pulled,
+    failed,
+    skipped,
+    reachedEnd,
+    limitHit,
+    interrupted,
+    stopReason,
+  };
 }
 
 export type { CrossPointApi, RelayResponse } from './crossbag';
