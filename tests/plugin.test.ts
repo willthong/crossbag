@@ -286,12 +286,14 @@ describe('setup wizard connection test auth flow', () => {
     if (first === undefined) {
       throw new Error('relay was not called');
     }
-    const [method, url, options] = first;
+    const [method, url, headers, formBody] = first;
 
     expect(method).toBe('POST');
     expect(url).toBe('https://wallabag.example.com/oauth/v2/token');
+    expect(headers?.['Content-Type'])
+      .toBe('application/x-www-form-urlencoded');
 
-    const body = new URLSearchParams(options?.body ?? '');
+    const body = new URLSearchParams(formBody ?? '');
     expect(body.get('grant_type')).toBe('password');
     expect(body.get('client_id')).toBe('crossbag-client');
     expect(body.get('client_secret')).toBe('client-secret');
@@ -319,11 +321,11 @@ describe('setup wizard connection test auth flow', () => {
     if (second === undefined) {
       throw new Error('second relay call missing');
     }
-    const [method, url, options] = second;
+    const [method, url, headers] = second;
 
     expect(method).toBe('GET');
     expect(url).toBe('https://wallabag.example.com/api/entries?perPage=1');
-    expect(options?.headers?.Authorization).toBe('Bearer token-abc');
+    expect(headers?.Authorization).toBe('Bearer token-abc');
   });
 
   it('stops after a rejected token request without browsing or saving', async () => {
@@ -578,6 +580,7 @@ describe('buildSyncDeps', () => {
       'GET',
       'https://wallabag.example.com/api/entries',
       {},
+      undefined,
     );
 
     await deps.fetchToSd(

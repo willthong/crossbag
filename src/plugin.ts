@@ -210,10 +210,12 @@ async function testConnection(
   const tokenRequest = buildTokenRequest(values);
 
   try {
-    const tokenResponse = await api.relay(tokenRequest.method, tokenRequest.url, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: tokenRequest.body,
-    });
+    const tokenResponse = await api.relay(
+      tokenRequest.method,
+      tokenRequest.url,
+      { 'Content-Type': 'application/x-www-form-urlencoded' },
+      tokenRequest.body,
+    );
 
     if (!isOk(tokenResponse.status)) {
       setAlert(
@@ -233,9 +235,11 @@ async function testConnection(
     }
 
     const request = buildTestRequest(values.serverUrl, token);
-    const response = await api.relay(request.method, request.url, {
-      headers: request.headers,
-    });
+    const response = await api.relay(
+      request.method,
+      request.url,
+      request.headers,
+    );
 
     if (!isOk(response.status)) {
       setAlert(
@@ -632,13 +636,7 @@ function fileNamesFromListing(payload: unknown): string[] {
 export function buildSyncDeps(api: SyncApi, fetchImpl: FetchLike): SyncDeps {
   return {
     relay: async (method, url, headers, body) => {
-      const options =
-        body !== undefined
-          ? { headers, body }
-          : Object.keys(headers).length > 0
-            ? { headers }
-            : {};
-      return await api.relay(method, url, options);
+      return await api.relay(method, url, headers, body);
     },
     fetchToSd: (url, dest, headers) => api.fetchToSd(url, dest, headers),
     writeFile: async (path, dataB64) => {

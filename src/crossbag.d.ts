@@ -6,11 +6,6 @@
  * check and build without the firmware present.
  */
 
-export interface RelayOptions {
-  headers?: Record<string, string>;
-  body?: string;
-}
-
 export interface RelayResponse {
   status: number;
   body: string;
@@ -21,7 +16,8 @@ export interface CrossPointApi {
   relay(
     method: string,
     url: string,
-    options?: RelayOptions,
+    headers?: Record<string, string>,
+    body?: string,
   ): Promise<RelayResponse>;
   writeFile(path: string, data: string): Promise<void>;
 }
