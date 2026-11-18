@@ -35,8 +35,27 @@
     }
     return clampSyncLimit(parsed);
   }
-  function withoutTrailingSlashes(serverUrl) {
-    return serverUrl.replace(/\/+$/, "");
+  function normalizeServerUrl(serverUrl) {
+    return serverUrl.trim().replace(/\/+$/, "");
+  }
+  function serverUrlProblem(serverUrl) {
+    const url = normalizeServerUrl(serverUrl);
+    if (url === "") {
+      return "Enter the server URL.";
+    }
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return "The server URL must be a full address, like https://wallabag.example.com.";
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "The server URL must start with http:// or https://.";
+    }
+    if (parsed.hostname === "") {
+      return "The server URL needs a host name, like https://wallabag.example.com.";
+    }
+    return void 0;
   }
   function encodeBase64Utf8(text) {
     const bytes = new TextEncoder().encode(text);
@@ -48,7 +67,7 @@
   }
   function buildConfig(values) {
     return {
-      server_url: withoutTrailingSlashes(values.serverUrl),
+      server_url: normalizeServerUrl(values.serverUrl),
       client_id: values.clientId,
       client_secret: values.clientSecret,
       username: values.username,
@@ -69,14 +88,14 @@
     });
     return {
       method: "POST",
-      url: `${withoutTrailingSlashes(values.serverUrl)}/oauth/v2/token`,
+      url: `${normalizeServerUrl(values.serverUrl)}/oauth/v2/token`,
       body: body.toString()
     };
   }
   function buildTestRequest(serverUrl, token) {
     return {
       method: "GET",
-      url: `${withoutTrailingSlashes(serverUrl)}/api/entries?perPage=1`,
+      url: `${normalizeServerUrl(serverUrl)}/api/entries?perPage=1`,
       headers: { Authorization: `Bearer ${token}` }
     };
   }
@@ -92,6 +111,13 @@
   }
   function describeError(error) {
     return error instanceof Error ? error.message : String(error);
+  }
+  function describeRelayFailure(error) {
+    const message = describeError(error);
+    if (!message.includes("/api/relay")) {
+      return message;
+    }
+    return `the device could not reach the server \u2014 check the server URL and that the reader is online (the device said: ${message})`;
   }
   function isOk(status) {
     return status >= 200 && status < 300;
@@ -130,6 +156,11 @@
   }
   async function testConnection(inputs, api, alert) {
     const values = readValues(inputs);
+    const problem = serverUrlProblem(values.serverUrl);
+    if (problem !== void 0) {
+      setAlert(alert, problem);
+      return;
+    }
     const tokenRequest = buildTokenRequest(values);
     try {
       const tokenResponse = await api.relay(
@@ -171,11 +202,17 @@
       }
       setAlert(alert, "Connection works.");
     } catch (error) {
-      setAlert(alert, `Connection failed: ${describeError(error)}`);
+      setAlert(alert, `Connection failed: ${describeRelayFailure(error)}`);
     }
   }
   async function saveConfig(inputs, api, alert) {
-    const config = buildConfig(readValues(inputs));
+    const values = readValues(inputs);
+    const problem = serverUrlProblem(values.serverUrl);
+    if (problem !== void 0) {
+      setAlert(alert, problem);
+      return;
+    }
+    const config = buildConfig(values);
     const payload = encodeBase64Utf8(JSON.stringify(config));
     try {
       await api.writeFile("config.json", payload);
@@ -449,7 +486,7 @@
       );
     } catch (error) {
       throw new Error(
-        `Could not reach the wallabag server: ${describeError(error)}`,
+        `Could not reach the wallabag server: ${describeRelayFailure(error)}`,
         { cause: error }
       );
     }
@@ -476,7 +513,7 @@
       page: String(page),
       perPage: String(ENTRIES_PER_PAGE)
     });
-    return `${withoutTrailingSlashes(serverUrl)}/api/entries?${params.toString()}`;
+    return `${normalizeServerUrl(serverUrl)}/api/entries?${params.toString()}`;
   }
   function parseEntriesPage(body) {
     let parsed;
@@ -688,7 +725,7 @@
           const filename = chooseFilename(article.title, article.id, names);
           names.add(filename);
           const dest = `${WALLABAG_DIR}/${filename}`;
-          const exportUrl = `${withoutTrailingSlashes(config.server_url)}/api/entries/${article.id}/export.epub`;
+          const exportUrl = `${normalizeServerUrl(config.server_url)}/api/entries/${article.id}/export.epub`;
           try {
             const outcome = await deps.fetchToSd(exportUrl, dest, authHeaders);
             const verdict = classifyOutcome(outcome);

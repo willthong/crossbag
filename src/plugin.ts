@@ -78,9 +78,41 @@ export function parseSyncLimit(raw: string): number {
   return clampSyncLimit(parsed);
 }
 
-/** Strip trailing slashes so path templates never produce `//`. */
-function withoutTrailingSlashes(serverUrl: string): string {
-  return serverUrl.replace(/\/+$/, '');
+/**
+ * Trim pasted whitespace and trailing slashes so path templates never produce
+ * `//` or a host name with a stray space in it. A pasted URL often arrives with
+ * a trailing newline, and the device's relay cannot connect to `host%20`.
+ */
+function normalizeServerUrl(serverUrl: string): string {
+  return serverUrl.trim().replace(/\/+$/, '');
+}
+
+/**
+ * Explain why a server URL cannot be used, or return undefined when it can.
+ * Checked before any request so a typo (a bare host, a pasted newline, a
+ * missing scheme) is reported in words instead of as a device relay failure.
+ */
+export function serverUrlProblem(serverUrl: string): string | undefined {
+  const url = normalizeServerUrl(serverUrl);
+  if (url === '') {
+    return 'Enter the server URL.';
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'The server URL must be a full address, like https://wallabag.example.com.';
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return 'The server URL must start with http:// or https://.';
+  }
+  if (parsed.hostname === '') {
+    return 'The server URL needs a host name, like https://wallabag.example.com.';
+  }
+
+  return undefined;
 }
 
 /** Encode text as base64 of its UTF-8 bytes. */
@@ -98,7 +130,7 @@ export function encodeBase64Utf8(text: string): string {
 /** Map setup-wizard form values to the wallabag config file shape. */
 export function buildConfig(values: SetupFormValues): WallabagConfig {
   return {
-    server_url: withoutTrailingSlashes(values.serverUrl),
+    server_url: normalizeServerUrl(values.serverUrl),
     client_id: values.clientId,
     client_secret: values.clientSecret,
     username: values.username,
@@ -122,7 +154,7 @@ export function buildTokenRequest(values: SetupFormValues): TokenRequest {
 
   return {
     method: 'POST',
-    url: `${withoutTrailingSlashes(values.serverUrl)}/oauth/v2/token`,
+    url: `${normalizeServerUrl(values.serverUrl)}/oauth/v2/token`,
     body: body.toString(),
   };
 }
@@ -134,7 +166,7 @@ export function buildTestRequest(
 ): TestRequest {
   return {
     method: 'GET',
-    url: `${withoutTrailingSlashes(serverUrl)}/api/entries?perPage=1`,
+    url: `${normalizeServerUrl(serverUrl)}/api/entries?perPage=1`,
     headers: { Authorization: `Bearer ${token}` },
   };
 }
@@ -152,6 +184,25 @@ function readValues(inputs: InputMap): SetupFormValues {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Turn a failed relay into something a person can act on. The device answers
+ * `/api/relay` with a bare 502 "relay failed" whenever its own outbound request
+ * fails, and its message blames large bodies even when the cause is a URL the
+ * device could not connect to. Name the likely causes and keep the device's
+ * words so the log can be matched up.
+ */
+function describeRelayFailure(error: unknown): string {
+  const message = describeError(error);
+  if (!message.includes('/api/relay')) {
+    return message;
+  }
+
+  return (
+    'the device could not reach the server — check the server URL and that ' +
+    `the reader is online (the device said: ${message})`
+  );
 }
 
 function isOk(status: number): boolean {
@@ -207,6 +258,12 @@ async function testConnection(
   alert: HTMLElement,
 ): Promise<void> {
   const values = readValues(inputs);
+  const problem = serverUrlProblem(values.serverUrl);
+  if (problem !== undefined) {
+    setAlert(alert, problem);
+    return;
+  }
+
   const tokenRequest = buildTokenRequest(values);
 
   try {
@@ -254,7 +311,7 @@ async function testConnection(
 
     setAlert(alert, 'Connection works.');
   } catch (error) {
-    setAlert(alert, `Connection failed: ${describeError(error)}`);
+    setAlert(alert, `Connection failed: ${describeRelayFailure(error)}`);
   }
 }
 
@@ -263,7 +320,14 @@ async function saveConfig(
   api: CrossPointApi,
   alert: HTMLElement,
 ): Promise<void> {
-  const config = buildConfig(readValues(inputs));
+  const values = readValues(inputs);
+  const problem = serverUrlProblem(values.serverUrl);
+  if (problem !== undefined) {
+    setAlert(alert, problem);
+    return;
+  }
+
+  const config = buildConfig(values);
   const payload = encodeBase64Utf8(JSON.stringify(config));
 
   try {
@@ -718,7 +782,7 @@ async function obtainToken(
     );
   } catch (error) {
     throw new Error(
-      `Could not reach the wallabag server: ${describeError(error)}`,
+      `Could not reach the wallabag server: ${describeRelayFailure(error)}`,
       { cause: error },
     );
   }
@@ -751,7 +815,7 @@ function buildEntriesUrl(serverUrl: string, page: number): string {
     perPage: String(ENTRIES_PER_PAGE),
   });
 
-  return `${withoutTrailingSlashes(serverUrl)}/api/entries?${params.toString()}`;
+  return `${normalizeServerUrl(serverUrl)}/api/entries?${params.toString()}`;
 }
 
 /** Decode one entries page, or undefined when the body is malformed. */
@@ -1022,7 +1086,7 @@ export async function runSync(
         names.add(filename);
         const dest = `${WALLABAG_DIR}/${filename}`;
         const exportUrl =
-          `${withoutTrailingSlashes(config.server_url)}` +
+          `${normalizeServerUrl(config.server_url)}` +
           `/api/entries/${article.id}/export.epub`;
 
         try {

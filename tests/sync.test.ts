@@ -83,6 +83,7 @@ interface HarnessOptions {
   sidecars?: Record<string, string>;
   token?: string;
   tokenError?: { status: number; body: string };
+  tokenThrows?: Error;
   fetchOutcome?: (id: number) => FetchOutcome | Promise<FetchOutcome>;
   listError?: Error;
   pageError?: (
@@ -102,6 +103,9 @@ function makeHarness(options: HarnessOptions) {
 
   const relay = vi.fn<SyncDeps['relay']>(async (_method, url) => {
     if (url.endsWith('/oauth/v2/token')) {
+      if (options.tokenThrows !== undefined) {
+        throw options.tokenThrows;
+      }
       if (options.tokenError !== undefined) {
         return options.tokenError;
       }
@@ -223,6 +227,21 @@ describe('runSync authentication', () => {
 
     await expect(runSync(harness.deps, configWithLimit(5))).rejects.toThrow(
       /invalid_grant/,
+    );
+
+    expect(harness.fetchToSd).not.toHaveBeenCalled();
+  });
+
+  it('explains a device relay failure in words', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      tokenThrows: new Error(
+        '/api/relay 502: relay failed; large bodies need /api/fetch',
+      ),
+    });
+
+    await expect(runSync(harness.deps, configWithLimit(5))).rejects.toThrow(
+      /could not reach the server[\s\S]*check the server URL/,
     );
 
     expect(harness.fetchToSd).not.toHaveBeenCalled();

@@ -11,3 +11,10 @@
   wizard's token request actually sends its body. Previously the body was
   nested inside the headers argument and wallabag answered `invalid_request:
   Invalid grant_type parameter or parameter missing`.
+- Fix: trim pasted whitespace from the server URL and refuse to test or save
+  an address that is not a full `http(s)://host` URL. A URL pasted with a
+  trailing newline made the device's relay fail with an opaque 502.
+- Fix: when the device's relay cannot reach the server, say so in words
+  ("the device could not reach the server — check the server URL and that the
+  reader is online") instead of passing on the device's "large bodies need
+  /api/fetch" message.

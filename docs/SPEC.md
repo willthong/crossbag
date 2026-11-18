@@ -11,6 +11,8 @@ plugin.js   →  setup wizard + Sync (browser on phone/computer)
                - Form: server URL, client ID, client secret, username,
                  password, sync_limit
                - "Test Connection" button → api.relay()
+                 (server URL is trimmed and must be a full http(s)://host
+                 address; a device relay failure is reported in words)
                - "Save" button → api.writeFile() writes config.json
                - "Sync" button → loads config.json via readFile(), lists
                  /Wallabag, pages unread articles, dedupes presence-aware,

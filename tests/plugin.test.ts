@@ -8,6 +8,7 @@ import {
   buildTokenRequest,
   encodeBase64Utf8,
   renderForm,
+  serverUrlProblem,
   type FetchLike,
   type SetupFormValues,
   type SyncApi,
@@ -90,6 +91,18 @@ describe('setup wizard config', () => {
     });
   });
 
+  it('trims pasted whitespace around the server URL', () => {
+    const config = buildConfig({
+      ...formValues,
+      serverUrl: '  https://wallabag.example.com/  \n',
+    });
+
+    expect(config.server_url).toBe('https://wallabag.example.com');
+    expect(buildTokenRequest(formValues).url).toBe(
+      'https://wallabag.example.com/oauth/v2/token',
+    );
+  });
+
   it('form-encodes the stored token body so special characters survive', () => {
     const config = buildConfig({
       ...formValues,
@@ -119,6 +132,25 @@ describe('setup wizard connection test', () => {
     expect(url.pathname.endsWith('/api/entries')).toBe(true);
     expect(url.searchParams.get('perPage')).toBe('1');
     expect(request.headers.Authorization).toBe('Bearer token-123');
+  });
+});
+
+describe('setup wizard server URL check', () => {
+  it('accepts a full http(s) address', () => {
+    expect(serverUrlProblem('https://wallabag.example.com')).toBeUndefined();
+    expect(serverUrlProblem('http://192.168.1.9:8080/wallabag/')).toBeUndefined();
+  });
+
+  it('rejects a missing address, a missing scheme and a bare host', () => {
+    expect(serverUrlProblem('   ')).toBe('Enter the server URL.');
+    expect(serverUrlProblem('https://')).toContain('full address');
+    expect(serverUrlProblem('wallabag.example.com')).toContain('full address');
+    expect(serverUrlProblem('https://wallabag example.com')).toContain(
+      'full address',
+    );
+    expect(serverUrlProblem('ftp://wallabag.example.com')).toContain(
+      'must start with http:// or https://',
+    );
   });
 });
 
@@ -220,6 +252,59 @@ describe('setup wizard form', () => {
         'The client credentials are invalid',
       );
     });
+  });
+
+  it('reports a device relay failure in words instead of the device jargon', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+    api.relay.mockRejectedValue(
+      new Error('/api/relay 502: relay failed; large bodies need /api/fetch'),
+    );
+
+    renderForm(container, api);
+    fillForm(container);
+    buttonByText(container, 'Test Connection').click();
+
+    await vi.waitFor(() => {
+      const text = container.querySelector('[role="alert"]')?.textContent ?? '';
+      expect(text).toContain('could not reach the server');
+      expect(text).toContain('check the server URL');
+      expect(text).toContain('/api/relay 502');
+    });
+  });
+
+  it('refuses an unusable server URL without calling the device', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+
+    renderForm(container, api);
+    fillForm(container);
+    inputByName(container, 'serverUrl').value = 'wallabag.example.com';
+    buttonByText(container, 'Test Connection').click();
+
+    await vi.waitFor(() => {
+      const text = container.querySelector('[role="alert"]')?.textContent ?? '';
+      expect(text).toContain('full address');
+    });
+
+    expect(api.relay).not.toHaveBeenCalled();
+  });
+
+  it('refuses to save an unusable server URL', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+
+    renderForm(container, api);
+    fillForm(container);
+    inputByName(container, 'serverUrl').value = 'https://';
+    buttonByText(container, 'Save').click();
+
+    await vi.waitFor(() => {
+      const text = container.querySelector('[role="alert"]')?.textContent ?? '';
+      expect(text).toContain('full address');
+    });
+
+    expect(api.writeFile).not.toHaveBeenCalled();
   });
 
   it('falls back to the status code when the error body is not JSON', async () => {
