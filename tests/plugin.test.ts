@@ -133,6 +133,14 @@ describe('setup wizard connection test', () => {
     expect(url.searchParams.get('perPage')).toBe('1');
     expect(request.headers.Authorization).toBe('Bearer token-123');
   });
+
+  it('asks for metadata so the reply stays under the relay body cap', () => {
+    const request = buildTestRequest('https://wallabag.example.com', 'token');
+
+    const url = new URL(request.url);
+
+    expect(url.searchParams.get('detail')).toBe('metadata');
+  });
 });
 
 describe('setup wizard server URL check', () => {
@@ -258,7 +266,7 @@ describe('setup wizard form', () => {
     const container = document.createElement('div');
     const api = makeApi();
     api.relay.mockRejectedValue(
-      new Error('/api/relay 502: relay failed; large bodies need /api/fetch'),
+      new Error('/api/relay 502: relay failed'),
     );
 
     renderForm(container, api);
@@ -269,6 +277,25 @@ describe('setup wizard form', () => {
       const text = container.querySelector('[role="alert"]')?.textContent ?? '';
       expect(text).toContain('could not reach the server');
       expect(text).toContain('check the server URL');
+      expect(text).toContain('/api/relay 502');
+    });
+  });
+
+  it('blames a too-large reply, not reachability, when the device says bodies were large', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+    api.relay.mockRejectedValue(
+      new Error('/api/relay 502: relay failed; large bodies need /api/fetch'),
+    );
+
+    renderForm(container, api);
+    fillForm(container);
+    buttonByText(container, 'Test Connection').click();
+
+    await vi.waitFor(() => {
+      const text = container.querySelector('[role="alert"]')?.textContent ?? '';
+      expect(text).toContain('too large');
+      expect(text).not.toContain('could not reach the server');
       expect(text).toContain('/api/relay 502');
     });
   });
@@ -409,7 +436,9 @@ describe('setup wizard connection test auth flow', () => {
     const [method, url, headers] = second;
 
     expect(method).toBe('GET');
-    expect(url).toBe('https://wallabag.example.com/api/entries?perPage=1');
+    expect(url).toBe(
+      'https://wallabag.example.com/api/entries?detail=metadata&perPage=1',
+    );
     expect(headers?.Authorization).toBe('Bearer token-abc');
   });
 

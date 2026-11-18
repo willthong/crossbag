@@ -18,3 +18,7 @@
   ("the device could not reach the server — check the server URL and that the
   reader is online") instead of passing on the device's "large bodies need
   /api/fetch" message.
+- Fix: ask wallabag for `detail=metadata` in the Test Connection request so a
+  full article body no longer overflows the ~32 KB relay cap and fails with a
+  misleading 502. The size-cap message is now reported as a too-large reply
+  rather than blamed on the server URL.

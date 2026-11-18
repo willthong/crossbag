@@ -235,9 +235,7 @@ describe('runSync authentication', () => {
   it('explains a device relay failure in words', async () => {
     const harness = makeHarness({
       pages: [[]],
-      tokenThrows: new Error(
-        '/api/relay 502: relay failed; large bodies need /api/fetch',
-      ),
+      tokenThrows: new Error('/api/relay 502: relay failed'),
     });
 
     await expect(runSync(harness.deps, configWithLimit(5))).rejects.toThrow(

@@ -166,7 +166,7 @@ export function buildTestRequest(
 ): TestRequest {
   return {
     method: 'GET',
-    url: `${normalizeServerUrl(serverUrl)}/api/entries?perPage=1`,
+    url: `${normalizeServerUrl(serverUrl)}/api/entries?detail=metadata&perPage=1`,
     headers: { Authorization: `Bearer ${token}` },
   };
 }
@@ -197,6 +197,16 @@ function describeRelayFailure(error: unknown): string {
   const message = describeError(error);
   if (!message.includes('/api/relay')) {
     return message;
+  }
+
+  // The device blames large bodies whenever its relay gives up, even when the
+  // real cause is an unreachable server. Only trust that label when the device
+  // names it, since `detail=metadata` keeps legitimate wizard replies small.
+  if (message.includes('large bodies')) {
+    return (
+      'the reply was too large for the device relay — the server may be ' +
+      `ignoring the metadata request (the device said: ${message})`
+    );
   }
 
   return (
