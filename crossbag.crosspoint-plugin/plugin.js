@@ -95,7 +95,7 @@
   function buildTestRequest(serverUrl, token) {
     return {
       method: "GET",
-      url: `${normalizeServerUrl(serverUrl)}/api/entries?perPage=1`,
+      url: `${normalizeServerUrl(serverUrl)}/api/entries?detail=metadata&perPage=1`,
       headers: { Authorization: `Bearer ${token}` }
     };
   }
@@ -116,6 +116,9 @@
     const message = describeError(error);
     if (!message.includes("/api/relay")) {
       return message;
+    }
+    if (message.includes("large bodies")) {
+      return `the reply was too large for the device relay \u2014 the server may be ignoring the metadata request (the device said: ${message})`;
     }
     return `the device could not reach the server \u2014 check the server URL and that the reader is online (the device said: ${message})`;
   }
