@@ -414,7 +414,7 @@ async function syncArticles(
     const deps = buildSyncDeps(syncApi, fetchImpl);
     const config = await loadSavedConfig(deps);
     const result = await runSync(deps, config, (attempted, total) => {
-      setStatus(status, `${attempted}/${total}`);
+      setStatus(status, `${attempted}/${total} articles to sync`);
     });
     setStatus(status, summarize(result));
   } catch (error) {
@@ -1066,7 +1066,6 @@ export async function runSync(
   const pulledIds = computePulledIds(state, files, sidecarIds);
   const names = new Set(files.map((name) => basename(name)));
   const nextState: SyncState = { articles: { ...state.articles } };
-  const candidates = new Set<number>();
 
   const limit = syncLimitOf(config);
   let pulled = 0;
@@ -1074,7 +1073,7 @@ export async function runSync(
   let skipped = 0;
   let page = 1;
   let pageSize = ENTRIES_PER_PAGE;
-  let reachedEnd = false;
+  let listingReachedEnd = false;
   let limitHit = false;
   let interrupted = false;
   let stopReason: string | undefined;
@@ -1087,117 +1086,118 @@ export async function runSync(
     nextState.articles[String(article.id)] = { filename, status };
   };
 
+  // Phase 1: walk the entire unread listing before downloading anything, so
+  // the progress total is the real number of articles that need syncing. The
+  // walk only fetches metadata; the downloads happen in phase 2.
+  const candidates: SyncArticle[] = [];
+  const candidateIds = new Set<number>();
+
+  while (true) {
+    const url = buildEntriesUrl(config.server_url, page, pageSize);
+    let response: { status: number; body: string };
+    try {
+      response = await deps.relay('GET', url, authHeaders);
+    } catch (error) {
+      // The device's relay rejects a reply it cannot buffer (over ~32 KB)
+      // with a 502. Metadata pages can still cross that line, so retry the
+      // walk at half the page size before giving up. Restarting from page 1
+      // discards the partial candidates, which the smaller pages re-discover.
+      if (
+        pageSize > MIN_ENTRIES_PER_PAGE &&
+        describeError(error).includes('large bodies')
+      ) {
+        pageSize = Math.max(
+          MIN_ENTRIES_PER_PAGE,
+          Math.floor(pageSize / 2),
+        );
+        page = 1;
+        candidates.length = 0;
+        candidateIds.clear();
+        continue;
+      }
+      interrupted = true;
+      stopReason = describeRelayFailure(error);
+      break;
+    }
+
+    if (!isOk(response.status)) {
+      interrupted = true;
+      stopReason = `page ${page}: ${describeHttpFailure(
+        response.status,
+        response.body,
+      )}`;
+      break;
+    }
+
+    const listing = parseEntriesPage(response.body);
+    if (listing === undefined) {
+      interrupted = true;
+      stopReason = `page ${page}: the entries listing could not be read`;
+      break;
+    }
+    if (listing.items.length === 0) {
+      listingReachedEnd = true;
+      break;
+    }
+
+    for (const article of listing.items) {
+      if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
+        candidateIds.add(article.id);
+        candidates.push(article);
+      }
+    }
+
+    if (page >= listing.pages) {
+      listingReachedEnd = true;
+      break;
+    }
+    page += 1;
+  }
+
+  const total = candidates.length;
+
   const reportProgress = (): void => {
-    if (onProgress !== undefined && candidates.size > 0) {
-      onProgress(
-        pulled + failed + skipped,
-        Math.min(limit, candidates.size),
-      );
+    if (onProgress !== undefined && total > 0) {
+      onProgress(pulled + failed + skipped, total);
     }
   };
 
+  // Phase 2: download the candidates newest-first until `sync_limit`
+  // successful pulls land or the candidate list is exhausted. Skips and
+  // failures do not consume the batch, matching the old skip-and-fill walk.
   try {
-    while (true) {
+    reportProgress();
+
+    for (const article of candidates) {
       if (pulled >= limit) {
         limitHit = true;
         break;
       }
 
-      const url = buildEntriesUrl(config.server_url, page, pageSize);
-      let response: { status: number; body: string };
+      const filename = chooseFilename(article.title, article.id, names);
+      names.add(filename);
+      const dest = `${WALLABAG_DIR}/${filename}`;
+      const exportUrl =
+        `${normalizeServerUrl(config.server_url)}` +
+        `/api/entries/${article.id}/export.epub`;
+
       try {
-        response = await deps.relay('GET', url, authHeaders);
-      } catch (error) {
-        // The device's relay rejects a reply it cannot buffer (over ~32 KB)
-        // with a 502. Metadata pages can still cross that line, so retry the
-        // walk at half the page size before giving up. Attempted ids stay in
-        // `pulledIds`, so a retry neither re-downloads nor double-counts.
-        if (
-          pageSize > MIN_ENTRIES_PER_PAGE &&
-          describeError(error).includes('large bodies')
-        ) {
-          pageSize = Math.max(
-            MIN_ENTRIES_PER_PAGE,
-            Math.floor(pageSize / 2),
-          );
-          page = 1;
-          continue;
-        }
-        interrupted = true;
-        stopReason = describeRelayFailure(error);
-        break;
-      }
-
-      if (!isOk(response.status)) {
-        interrupted = true;
-        stopReason = `page ${page}: ${describeHttpFailure(
-          response.status,
-          response.body,
-        )}`;
-        break;
-      }
-
-      const listing = parseEntriesPage(response.body);
-      if (listing === undefined) {
-        interrupted = true;
-        stopReason = `page ${page}: the entries listing could not be read`;
-        break;
-      }
-      if (listing.items.length === 0) {
-        reachedEnd = true;
-        break;
-      }
-
-      for (const article of listing.items) {
-        if (!pulledIds.has(article.id)) {
-          candidates.add(article.id);
-        }
-      }
-      reportProgress();
-
-      for (const article of listing.items) {
-        if (pulled >= limit) {
-          limitHit = true;
-          break;
-        }
-        if (pulledIds.has(article.id)) {
-          continue;
-        }
-
-        const filename = chooseFilename(article.title, article.id, names);
-        names.add(filename);
-        const dest = `${WALLABAG_DIR}/${filename}`;
-        const exportUrl =
-          `${normalizeServerUrl(config.server_url)}` +
-          `/api/entries/${article.id}/export.epub`;
-
-        try {
-          const outcome = await deps.fetchToSd(exportUrl, dest, authHeaders);
-          const verdict = classifyOutcome(outcome);
-          if (verdict === 'skipped') {
-            skipped += 1;
-          } else if (verdict === 'failed') {
-            failed += 1;
-          } else {
-            pulled += 1;
-          }
-          record(article, filename, verdict);
-        } catch {
+        const outcome = await deps.fetchToSd(exportUrl, dest, authHeaders);
+        const verdict = classifyOutcome(outcome);
+        if (verdict === 'skipped') {
+          skipped += 1;
+        } else if (verdict === 'failed') {
           failed += 1;
-          record(article, filename, 'failed');
+        } else {
+          pulled += 1;
         }
-        pulledIds.add(article.id);
-        reportProgress();
+        record(article, filename, verdict);
+      } catch {
+        failed += 1;
+        record(article, filename, 'failed');
       }
-
-      if (limitHit) {
-        break;
-      }
-      if (page >= listing.pages) {
-        reachedEnd = true;
-        break;
-      }
-      page += 1;
+      pulledIds.add(article.id);
+      reportProgress();
     }
   } finally {
     await deps.writeFile(
@@ -1210,7 +1210,7 @@ export async function runSync(
     pulled,
     failed,
     skipped,
-    reachedEnd,
+    reachedEnd: listingReachedEnd && !interrupted && !limitHit,
     limitHit,
     interrupted,
     stopReason,

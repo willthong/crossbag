@@ -858,7 +858,8 @@ describe('setup wizard Sync', () => {
     buttonByText(container, 'Sync').click();
 
     await vi.waitFor(() => {
-      expect(syncStatus(container).textContent).toContain('1/2');
+      const text = syncStatus(container).textContent ?? '';
+      expect(text).toContain('1/2 articles to sync');
     });
 
     gate.release();

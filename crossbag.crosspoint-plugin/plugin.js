@@ -267,7 +267,7 @@
       const deps = buildSyncDeps(syncApi, fetchImpl);
       const config = await loadSavedConfig(deps);
       const result = await runSync(deps, config, (attempted, total) => {
-        setStatus(status, `${attempted}/${total}`);
+        setStatus(status, `${attempted}/${total} articles to sync`);
       });
       setStatus(status, summarize(result));
     } catch (error) {
@@ -682,113 +682,105 @@
     const pulledIds = computePulledIds(state, files, sidecarIds);
     const names = new Set(files.map((name) => basename(name)));
     const nextState = { articles: { ...state.articles } };
-    const candidates = /* @__PURE__ */ new Set();
     const limit = syncLimitOf(config);
     let pulled = 0;
     let failed = 0;
     let skipped = 0;
     let page = 1;
     let pageSize = ENTRIES_PER_PAGE;
-    let reachedEnd = false;
+    let listingReachedEnd = false;
     let limitHit = false;
     let interrupted = false;
     let stopReason;
     const record = (article, filename, status) => {
       nextState.articles[String(article.id)] = { filename, status };
     };
+    const candidates = [];
+    const candidateIds = /* @__PURE__ */ new Set();
+    while (true) {
+      const url = buildEntriesUrl(config.server_url, page, pageSize);
+      let response;
+      try {
+        response = await deps.relay("GET", url, authHeaders);
+      } catch (error) {
+        if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
+          pageSize = Math.max(
+            MIN_ENTRIES_PER_PAGE,
+            Math.floor(pageSize / 2)
+          );
+          page = 1;
+          candidates.length = 0;
+          candidateIds.clear();
+          continue;
+        }
+        interrupted = true;
+        stopReason = describeRelayFailure(error);
+        break;
+      }
+      if (!isOk(response.status)) {
+        interrupted = true;
+        stopReason = `page ${page}: ${describeHttpFailure(
+          response.status,
+          response.body
+        )}`;
+        break;
+      }
+      const listing = parseEntriesPage(response.body);
+      if (listing === void 0) {
+        interrupted = true;
+        stopReason = `page ${page}: the entries listing could not be read`;
+        break;
+      }
+      if (listing.items.length === 0) {
+        listingReachedEnd = true;
+        break;
+      }
+      for (const article of listing.items) {
+        if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
+          candidateIds.add(article.id);
+          candidates.push(article);
+        }
+      }
+      if (page >= listing.pages) {
+        listingReachedEnd = true;
+        break;
+      }
+      page += 1;
+    }
+    const total = candidates.length;
     const reportProgress = () => {
-      if (onProgress !== void 0 && candidates.size > 0) {
-        onProgress(
-          pulled + failed + skipped,
-          Math.min(limit, candidates.size)
-        );
+      if (onProgress !== void 0 && total > 0) {
+        onProgress(pulled + failed + skipped, total);
       }
     };
     try {
-      while (true) {
+      reportProgress();
+      for (const article of candidates) {
         if (pulled >= limit) {
           limitHit = true;
           break;
         }
-        const url = buildEntriesUrl(config.server_url, page, pageSize);
-        let response;
+        const filename = chooseFilename(article.title, article.id, names);
+        names.add(filename);
+        const dest = `${WALLABAG_DIR}/${filename}`;
+        const exportUrl = `${normalizeServerUrl(config.server_url)}/api/entries/${article.id}/export.epub`;
         try {
-          response = await deps.relay("GET", url, authHeaders);
-        } catch (error) {
-          if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
-            pageSize = Math.max(
-              MIN_ENTRIES_PER_PAGE,
-              Math.floor(pageSize / 2)
-            );
-            page = 1;
-            continue;
-          }
-          interrupted = true;
-          stopReason = describeRelayFailure(error);
-          break;
-        }
-        if (!isOk(response.status)) {
-          interrupted = true;
-          stopReason = `page ${page}: ${describeHttpFailure(
-            response.status,
-            response.body
-          )}`;
-          break;
-        }
-        const listing = parseEntriesPage(response.body);
-        if (listing === void 0) {
-          interrupted = true;
-          stopReason = `page ${page}: the entries listing could not be read`;
-          break;
-        }
-        if (listing.items.length === 0) {
-          reachedEnd = true;
-          break;
-        }
-        for (const article of listing.items) {
-          if (!pulledIds.has(article.id)) {
-            candidates.add(article.id);
-          }
-        }
-        reportProgress();
-        for (const article of listing.items) {
-          if (pulled >= limit) {
-            limitHit = true;
-            break;
-          }
-          if (pulledIds.has(article.id)) {
-            continue;
-          }
-          const filename = chooseFilename(article.title, article.id, names);
-          names.add(filename);
-          const dest = `${WALLABAG_DIR}/${filename}`;
-          const exportUrl = `${normalizeServerUrl(config.server_url)}/api/entries/${article.id}/export.epub`;
-          try {
-            const outcome = await deps.fetchToSd(exportUrl, dest, authHeaders);
-            const verdict = classifyOutcome(outcome);
-            if (verdict === "skipped") {
-              skipped += 1;
-            } else if (verdict === "failed") {
-              failed += 1;
-            } else {
-              pulled += 1;
-            }
-            record(article, filename, verdict);
-          } catch {
+          const outcome = await deps.fetchToSd(exportUrl, dest, authHeaders);
+          const verdict = classifyOutcome(outcome);
+          if (verdict === "skipped") {
+            skipped += 1;
+          } else if (verdict === "failed") {
             failed += 1;
-            record(article, filename, "failed");
+          } else {
+            pulled += 1;
           }
-          pulledIds.add(article.id);
-          reportProgress();
+          record(article, filename, verdict);
+        } catch {
+          failed += 1;
+          record(article, filename, "failed");
         }
-        if (limitHit) {
-          break;
-        }
-        if (page >= listing.pages) {
-          reachedEnd = true;
-          break;
-        }
-        page += 1;
+        pulledIds.add(article.id);
+        reportProgress();
       }
     } finally {
       await deps.writeFile(
@@ -800,7 +792,7 @@
       pulled,
       failed,
       skipped,
-      reachedEnd,
+      reachedEnd: listingReachedEnd && !interrupted && !limitHit,
       limitHit,
       interrupted,
       stopReason

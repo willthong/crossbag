@@ -409,6 +409,35 @@ describe('runSync downloads', () => {
   });
 });
 
+describe('runSync progress total', () => {
+  it('counts every unread article not on disk before downloading', async () => {
+    const harness = makeHarness({ pages: [[1, 2], [3, 4, 5]] });
+    const progress: [number, number][] = [];
+
+    await runSync(harness.deps, configWithLimit(2), (attempted, total) => {
+      progress.push([attempted, total]);
+    });
+
+    expect(progress[0]).toEqual([0, 5]);
+    expect(harness.fetchCalls.map((call) => call.id)).toEqual([1, 2]);
+  });
+
+  it('leaves already-pulled articles out of the total', async () => {
+    const harness = makeHarness({
+      pages: [[1, 2], [3, 4]],
+      files: ['Article 1.epub'],
+      syncState: { articles: { '1': { filename: 'Article 1.epub' } } },
+    });
+    const progress: [number, number][] = [];
+
+    await runSync(harness.deps, configWithLimit(10), (attempted, total) => {
+      progress.push([attempted, total]);
+    });
+
+    expect(progress[0]).toEqual([0, 3]);
+  });
+});
+
 describe('runSync batching', () => {
   it('stops at sync_limit and reports that more articles remain', async () => {
     const harness = makeHarness({ pages: [[1, 2, 3, 4, 5]] });
