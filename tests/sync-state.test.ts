@@ -184,6 +184,25 @@ describe('computePulledIds', () => {
     expect([...pulled]).toEqual([1]);
   });
 
+  it('matches pulled filenames case-insensitively, as FAT does', () => {
+    const state = ledger({ '42': 'Weekly digest.epub' });
+    const files = ['WEEKLY DIGEST.EPUB'];
+
+    const pulled = computePulledIds(state, files, {});
+
+    expect(pulled.has(42)).toBe(true);
+  });
+
+  it('matches catalog sidecars case-insensitively too', () => {
+    const state = EMPTY_STATE;
+    const files = ['on the beach.epub', 'On The Beach.EPUB.meta.json'];
+    const sidecars = { 'On The Beach.EPUB.meta.json': 99 };
+
+    const pulled = computePulledIds(state, files, sidecars);
+
+    expect(pulled.has(99)).toBe(true);
+  });
+
   it('returns a de-duplicated set when state and sidecar disagree', () => {
     const state = ledger({ '42': 'Weekly digest.epub' });
     const files = ['Weekly digest.epub', 'Weekly digest-42.epub'];

@@ -378,14 +378,17 @@
   var EPUB_SUFFIX = ".epub";
   var SIDECAR_SUFFIX = ".meta.json";
   function sidecarEpub(name) {
-    if (!name.endsWith(SIDECAR_SUFFIX)) {
+    const lower = name.toLowerCase();
+    if (!lower.endsWith(SIDECAR_SUFFIX)) {
       return void 0;
     }
     const epub = name.slice(0, -SIDECAR_SUFFIX.length);
-    return epub.endsWith(EPUB_SUFFIX) ? epub : void 0;
+    return lower.slice(0, -SIDECAR_SUFFIX.length).endsWith(EPUB_SUFFIX) ? epub : void 0;
   }
   function computePulledIds(state, files, sidecarIds) {
-    const present = new Set(files.map((name) => basename(name)));
+    const present = new Set(
+      files.map((name) => basename(name).toLowerCase())
+    );
     const pulled = /* @__PURE__ */ new Set();
     for (const [id, entry] of Object.entries(state.articles)) {
       const articleId = Number(id);
@@ -400,13 +403,13 @@
         continue;
       }
       const saved = basename(entry.filename);
-      if (saved.endsWith(EPUB_SUFFIX) && present.has(saved)) {
+      if (saved.toLowerCase().endsWith(EPUB_SUFFIX) && present.has(saved.toLowerCase())) {
         pulled.add(articleId);
       }
     }
     for (const [name, id] of Object.entries(sidecarIds)) {
       const epub = sidecarEpub(basename(name));
-      if (epub !== void 0 && present.has(epub)) {
+      if (epub !== void 0 && present.has(epub.toLowerCase())) {
         pulled.add(id);
       }
     }

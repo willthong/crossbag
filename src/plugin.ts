@@ -587,12 +587,15 @@ const SIDECAR_SUFFIX = '.meta.json';
 
 /** The EPUB a sidecar describes, or undefined when `name` is not a sidecar. */
 function sidecarEpub(name: string): string | undefined {
-  if (!name.endsWith(SIDECAR_SUFFIX)) {
+  const lower = name.toLowerCase();
+  if (!lower.endsWith(SIDECAR_SUFFIX)) {
     return undefined;
   }
 
   const epub = name.slice(0, -SIDECAR_SUFFIX.length);
-  return epub.endsWith(EPUB_SUFFIX) ? epub : undefined;
+  return lower.slice(0, -SIDECAR_SUFFIX.length).endsWith(EPUB_SUFFIX)
+    ? epub
+    : undefined;
 }
 
 /** Ids already present on the SD card, from sync-state and sidecars. */
@@ -601,7 +604,13 @@ export function computePulledIds(
   files: string[],
   sidecarIds: Record<string, number>,
 ): Set<number> {
-  const present = new Set(files.map((name) => basename(name)));
+  // FAT is case-insensitive and `chooseFilename` dedupes case-insensitively,
+  // so presence must too — otherwise a case difference between the recorded
+  // filename and the on-disk name makes a pulled article look deleted and
+  // Sync re-downloads it every run.
+  const present = new Set(
+    files.map((name) => basename(name).toLowerCase()),
+  );
   const pulled = new Set<number>();
 
   for (const [id, entry] of Object.entries(state.articles)) {
@@ -619,14 +628,14 @@ export function computePulledIds(
     }
 
     const saved = basename(entry.filename);
-    if (saved.endsWith(EPUB_SUFFIX) && present.has(saved)) {
+    if (saved.toLowerCase().endsWith(EPUB_SUFFIX) && present.has(saved.toLowerCase())) {
       pulled.add(articleId);
     }
   }
 
   for (const [name, id] of Object.entries(sidecarIds)) {
     const epub = sidecarEpub(basename(name));
-    if (epub !== undefined && present.has(epub)) {
+    if (epub !== undefined && present.has(epub.toLowerCase())) {
       pulled.add(id);
     }
   }
