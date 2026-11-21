@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runSync, type SyncDeps } from '../src/plugin';
+import { runSync, type SyncDeps, type SyncProgress } from '../src/plugin';
 import type { WallabagConfig } from '../src/wallabag';
 
 const CONFIG: WallabagConfig = {
@@ -409,16 +409,75 @@ describe('runSync downloads', () => {
   });
 });
 
+describe('runSync phase progress', () => {
+  it('reports each metadata page and then each download attempt', async () => {
+    const harness = makeHarness({ pages: [[1, 2], [3]] });
+    const events: { at: 'progress' | 'fetch'; value: unknown }[] = [];
+
+    const fetchToSd = harness.deps.fetchToSd;
+    harness.deps.fetchToSd = async (url, dest, headers) => {
+      events.push({ at: 'fetch', value: articleIdFromUrl(url) });
+      return await fetchToSd(url, dest, headers);
+    };
+
+    await runSync(harness.deps, configWithLimit(10), (...args: unknown[]) => {
+      events.push({ at: 'progress', value: args[0] });
+    });
+
+    expect(events).toEqual([
+      { at: 'progress', value: { phase: 'reading', page: 1, pages: 2 } },
+      { at: 'progress', value: { phase: 'reading', page: 2, pages: 2 } },
+      {
+        at: 'progress',
+        value: {
+          phase: 'downloading',
+          index: 1,
+          total: 3,
+          title: 'Article 1',
+        },
+      },
+      { at: 'fetch', value: 1 },
+      {
+        at: 'progress',
+        value: {
+          phase: 'downloading',
+          index: 2,
+          total: 3,
+          title: 'Article 2',
+        },
+      },
+      { at: 'fetch', value: 2 },
+      {
+        at: 'progress',
+        value: {
+          phase: 'downloading',
+          index: 3,
+          total: 3,
+          title: 'Article 3',
+        },
+      },
+      { at: 'fetch', value: 3 },
+    ]);
+  });
+});
+
 describe('runSync progress total', () => {
   it('counts every unread article not on disk before downloading', async () => {
     const harness = makeHarness({ pages: [[1, 2], [3, 4, 5]] });
-    const progress: [number, number][] = [];
+    const progress: SyncProgress[] = [];
 
-    await runSync(harness.deps, configWithLimit(2), (attempted, total) => {
-      progress.push([attempted, total]);
+    await runSync(harness.deps, configWithLimit(2), (event) => {
+      progress.push(event);
     });
 
-    expect(progress[0]).toEqual([0, 5]);
+    const firstDownload = progress.findIndex(
+      (event) => event.phase === 'downloading',
+    );
+    expect(progress[firstDownload]).toMatchObject({ index: 1, total: 5 });
+    expect(progress.slice(0, firstDownload)).toEqual([
+      { phase: 'reading', page: 1, pages: 2 },
+      { phase: 'reading', page: 2, pages: 2 },
+    ]);
     expect(harness.fetchCalls.map((call) => call.id)).toEqual([1, 2]);
   });
 
@@ -428,13 +487,16 @@ describe('runSync progress total', () => {
       files: ['Article 1.epub'],
       syncState: { articles: { '1': { filename: 'Article 1.epub' } } },
     });
-    const progress: [number, number][] = [];
+    const progress: SyncProgress[] = [];
 
-    await runSync(harness.deps, configWithLimit(10), (attempted, total) => {
-      progress.push([attempted, total]);
+    await runSync(harness.deps, configWithLimit(10), (event) => {
+      progress.push(event);
     });
 
-    expect(progress[0]).toEqual([0, 3]);
+    const downloads = progress.filter(
+      (event) => event.phase === 'downloading',
+    );
+    expect(downloads[0]).toMatchObject({ index: 1, total: 3 });
   });
 });
 
@@ -577,8 +639,8 @@ describe('runSync sync-state', () => {
     const harness = makeHarness({ pages: [[1, 2]] });
 
     await expect(
-      runSync(harness.deps, configWithLimit(5), (attempted) => {
-        if (attempted >= 1) {
+      runSync(harness.deps, configWithLimit(5), (progress) => {
+        if (progress.phase === 'downloading' && progress.index >= 2) {
           throw new Error('progress handler failed');
         }
       }),

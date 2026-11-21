@@ -373,7 +373,7 @@ function asSyncApi(api: CrossPointApi): SyncApi | undefined {
 }
 
 /** Build the one-line summary shown after Sync ends. */
-function summarize(result: SyncResult): string {
+function summarize(result: SyncResult, lastLine?: string): string {
   let summary =
     `${result.pulled} pulled · ${result.failed} failed (retries next sync) · ` +
     `${result.skipped} skipped (deleted server-side)`;
@@ -385,6 +385,9 @@ function summarize(result: SyncResult): string {
     summary += ' — the sync did not reach the end of the list.';
     if (result.stopReason !== undefined) {
       summary += ` Reason: ${result.stopReason}`;
+    }
+    if (lastLine !== undefined) {
+      summary = `${lastLine} — ${summary}`;
     }
   }
 
@@ -410,15 +413,22 @@ async function syncArticles(
   button.disabled = true;
   setStatus(status, 'Syncing…');
 
+  let lastStatusLine: string | undefined;
+
   try {
     const deps = buildSyncDeps(syncApi, fetchImpl);
     const config = await loadSavedConfig(deps);
-    const result = await runSync(deps, config, (attempted, total) => {
-      setStatus(status, `${attempted}/${total} articles to sync`);
+    const result = await runSync(deps, config, (p) => {
+      lastStatusLine =
+        p.phase === 'reading'
+          ? `Reading unread list: page ${p.page}/${p.pages}`
+          : `Downloading ${p.index}/${p.total}${p.title ? `: ${p.title}` : ''}`;
+      setStatus(status, lastStatusLine);
     });
-    setStatus(status, summarize(result));
+    setStatus(status, summarize(result, lastStatusLine));
   } catch (error) {
-    setStatus(status, describeError(error));
+    const why = describeError(error);
+    setStatus(status, `${lastStatusLine ? `${lastStatusLine} — ` : ''}${why}`);
   } finally {
     button.disabled = false;
   }
@@ -660,6 +670,11 @@ export interface SyncDeps {
   listFiles: (path: string) => Promise<string[]>;
   readFile: (path: string) => Promise<string>;
 }
+
+/** Phase-aware progress reported while Sync runs. */
+export type SyncProgress =
+  | { phase: 'reading'; page: number; pages: number }
+  | { phase: 'downloading'; index: number; total: number; title: string };
 
 export interface SyncResult {
   pulled: number;
@@ -1047,7 +1062,7 @@ function classifyOutcome(outcome: {
 export async function runSync(
   deps: SyncDeps,
   config: WallabagConfig,
-  onProgress?: (attempted: number, total: number) => void,
+  onProgress?: (progress: SyncProgress) => void,
 ): Promise<SyncResult> {
   const token = await obtainToken(deps, config);
   const authHeaders = { Authorization: `Bearer ${token}` };
@@ -1106,10 +1121,7 @@ export async function runSync(
         pageSize > MIN_ENTRIES_PER_PAGE &&
         describeError(error).includes('large bodies')
       ) {
-        pageSize = Math.max(
-          MIN_ENTRIES_PER_PAGE,
-          Math.floor(pageSize / 2),
-        );
+        pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
         page = 1;
         candidates.length = 0;
         candidateIds.clear();
@@ -1122,10 +1134,7 @@ export async function runSync(
 
     if (!isOk(response.status)) {
       interrupted = true;
-      stopReason = `page ${page}: ${describeHttpFailure(
-        response.status,
-        response.body,
-      )}`;
+      stopReason = `page ${page}: ${describeHttpFailure(response.status, response.body)}`;
       break;
     }
 
@@ -1135,10 +1144,12 @@ export async function runSync(
       stopReason = `page ${page}: the entries listing could not be read`;
       break;
     }
-    if (listing.items.length === 0) {
+    if (!listing.items.length) {
       listingReachedEnd = true;
       break;
     }
+
+    onProgress?.({ phase: 'reading', page: listing.page, pages: Math.max(1, listing.pages) });
 
     for (const article of listing.items) {
       if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
@@ -1154,25 +1165,17 @@ export async function runSync(
     page += 1;
   }
 
-  const total = candidates.length;
-
-  const reportProgress = (): void => {
-    if (onProgress !== undefined && total > 0) {
-      onProgress(pulled + failed + skipped, total);
-    }
-  };
-
   // Phase 2: download the candidates newest-first until `sync_limit`
   // successful pulls land or the candidate list is exhausted. Skips and
   // failures do not consume the batch, matching the old skip-and-fill walk.
   try {
-    reportProgress();
-
-    for (const article of candidates) {
+    for (const [i, article] of candidates.entries()) {
       if (pulled >= limit) {
         limitHit = true;
         break;
       }
+
+      onProgress?.({ phase: 'downloading', index: i + 1, total: candidates.length, title: article.title });
 
       const filename = chooseFilename(article.title, article.id, names);
       names.add(filename);
@@ -1197,13 +1200,9 @@ export async function runSync(
         record(article, filename, 'failed');
       }
       pulledIds.add(article.id);
-      reportProgress();
     }
   } finally {
-    await deps.writeFile(
-      SYNC_STATE_PATH,
-      encodeBase64Utf8(JSON.stringify(nextState)),
-    );
+    await deps.writeFile(SYNC_STATE_PATH, encodeBase64Utf8(JSON.stringify(nextState)));
   }
 
   return {

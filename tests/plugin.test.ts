@@ -848,7 +848,7 @@ describe('setup wizard Sync', () => {
       articleIds: [1, 2],
       fetchToSd: async (url) => {
         downloaded.push(articleIdFromUrl(url));
-        if (downloaded.length === 2) {
+        if (downloaded.length === 1) {
           await gate.promise;
         }
         return { status: 200, bytes: 4096, complete: true };
@@ -859,7 +859,7 @@ describe('setup wizard Sync', () => {
 
     await vi.waitFor(() => {
       const text = syncStatus(container).textContent ?? '';
-      expect(text).toContain('1/2 articles to sync');
+      expect(text).toContain('Downloading 1/2: Article 1');
     });
 
     gate.release();
@@ -876,6 +876,97 @@ describe('setup wizard Sync', () => {
     expect(api.fetchToSd).toHaveBeenCalledTimes(2);
     expect(api.writeFile.mock.calls[0]?.[0])
       .toBe(`${PLUGIN_DIR}/sync-state.json`);
+  });
+
+  it('names the unread-list page while reading', async () => {
+    const gate = openGate();
+    const articleIds = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const { container, api } = mountSync({ articleIds, syncLimit: '1' });
+    api.relay.mockImplementation(async (_method, url) => {
+      if (url.endsWith('/oauth/v2/token')) {
+        return tokenResponse('token-1');
+      }
+      const page = Number(new URL(url).searchParams.get('page') ?? '1');
+      if (page === 2) {
+        await gate.promise;
+      }
+      return { status: 200, body: entriesBody(articleIds, page) };
+    });
+
+    buttonByText(container, 'Sync').click();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toBe(
+        'Reading unread list: page 1/2',
+      );
+    });
+
+    gate.release();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toMatch(/1 pulled/);
+    });
+  });
+
+  it('names the article being downloaded', async () => {
+    const gate = openGate();
+    const { container } = mountSync({
+      articleIds: [1, 2],
+      fetchToSd: async () => {
+        await gate.promise;
+        return { status: 200, bytes: 4096, complete: true };
+      },
+    });
+
+    buttonByText(container, 'Sync').click();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toBe(
+        'Downloading 1/2: Article 1',
+      );
+    });
+
+    gate.release();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toMatch(/2 pulled/);
+    });
+  });
+
+  it('leaves the title off a downloading line when the article has none', async () => {
+    const gate = openGate();
+    const { container, api } = mountSync({
+      articleIds: [1],
+      fetchToSd: async () => {
+        await gate.promise;
+        return { status: 200, bytes: 4096, complete: true };
+      },
+    });
+    api.relay.mockImplementation(async (_method, url) => {
+      if (url.endsWith('/oauth/v2/token')) {
+        return tokenResponse('token-1');
+      }
+      return {
+        status: 200,
+        body: JSON.stringify({
+          page: 1,
+          pages: 1,
+          _embedded: { items: [{ id: 1, title: '' }] },
+        }),
+      };
+    });
+
+    buttonByText(container, 'Sync').click();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toBe('Downloading 1/1');
+    });
+
+    gate.release();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toMatch(/1 pulled/);
+    });
   });
 
   it('warns that more unread articles remain when the limit is hit', async () => {
@@ -917,7 +1008,7 @@ describe('setup wizard Sync', () => {
 
     await vi.waitFor(() => {
       const text = syncStatus(container).textContent ?? '';
-      expect(text).toContain('1 pulled');
+      expect(text).toContain('Downloading 1/1: Article 1 — 1 pulled');
       expect(text).toContain('did not reach the end of the list.');
       expect(text).toContain('Reason: page 2: HTTP 503');
       expect(text).not.toContain('more unread articles remain');
@@ -988,12 +1079,31 @@ describe('setup wizard Sync', () => {
     buttonByText(container, 'Sync').click();
 
     await vi.waitFor(() => {
-      expect(syncStatus(container).textContent).toMatch(
-        /could not list|failed|error/i,
-      );
+      expect(syncStatus(container).textContent).toMatch(/listing down/);
     });
 
+    const text = syncStatus(container).textContent ?? '';
+    expect(text).toBe('Could not list /Wallabag: listing down');
+    expect(text).not.toContain('Reading unread list:');
+    expect(text).not.toContain('Downloading');
+
     expect(api.fetchToSd).not.toHaveBeenCalled();
+  });
+
+  it('keeps the last phase line and appends the reason when a later step fails', async () => {
+    const { container, api } = mountSync({ articleIds: [1] });
+    api.writeFile.mockRejectedValue(new Error('disk full'));
+
+    buttonByText(container, 'Sync').click();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toContain('disk full');
+    });
+
+    expect(syncStatus(container).textContent).toBe(
+      'Downloading 1/1: Article 1 — disk full',
+    );
+    expect(api.fetchToSd).toHaveBeenCalledTimes(1);
   });
 
   it('disables Sync while running so a double click cannot start two syncs', async () => {

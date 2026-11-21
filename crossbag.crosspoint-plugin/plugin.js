@@ -239,7 +239,7 @@
     const candidate = api;
     return typeof candidate.fetchToSd === "function" ? api : void 0;
   }
-  function summarize(result) {
+  function summarize(result, lastLine) {
     let summary = `${result.pulled} pulled \xB7 ${result.failed} failed (retries next sync) \xB7 ${result.skipped} skipped (deleted server-side)`;
     if (result.limitHit) {
       summary += " \u2014 more unread articles remain.";
@@ -248,6 +248,9 @@
       summary += " \u2014 the sync did not reach the end of the list.";
       if (result.stopReason !== void 0) {
         summary += ` Reason: ${result.stopReason}`;
+      }
+      if (lastLine !== void 0) {
+        summary = `${lastLine} \u2014 ${summary}`;
       }
     }
     return summary;
@@ -263,15 +266,18 @@
     }
     button.disabled = true;
     setStatus(status, "Syncing\u2026");
+    let lastStatusLine;
     try {
       const deps = buildSyncDeps(syncApi, fetchImpl);
       const config = await loadSavedConfig(deps);
-      const result = await runSync(deps, config, (attempted, total) => {
-        setStatus(status, `${attempted}/${total} articles to sync`);
+      const result = await runSync(deps, config, (p) => {
+        lastStatusLine = p.phase === "reading" ? `Reading unread list: page ${p.page}/${p.pages}` : `Downloading ${p.index}/${p.total}${p.title ? `: ${p.title}` : ""}`;
+        setStatus(status, lastStatusLine);
       });
-      setStatus(status, summarize(result));
+      setStatus(status, summarize(result, lastStatusLine));
     } catch (error) {
-      setStatus(status, describeError(error));
+      const why = describeError(error);
+      setStatus(status, `${lastStatusLine ? `${lastStatusLine} \u2014 ` : ""}${why}`);
     } finally {
       button.disabled = false;
     }
@@ -704,10 +710,7 @@
         response = await deps.relay("GET", url, authHeaders);
       } catch (error) {
         if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
-          pageSize = Math.max(
-            MIN_ENTRIES_PER_PAGE,
-            Math.floor(pageSize / 2)
-          );
+          pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
           page = 1;
           candidates.length = 0;
           candidateIds.clear();
@@ -719,10 +722,7 @@
       }
       if (!isOk(response.status)) {
         interrupted = true;
-        stopReason = `page ${page}: ${describeHttpFailure(
-          response.status,
-          response.body
-        )}`;
+        stopReason = `page ${page}: ${describeHttpFailure(response.status, response.body)}`;
         break;
       }
       const listing = parseEntriesPage(response.body);
@@ -731,10 +731,11 @@
         stopReason = `page ${page}: the entries listing could not be read`;
         break;
       }
-      if (listing.items.length === 0) {
+      if (!listing.items.length) {
         listingReachedEnd = true;
         break;
       }
+      onProgress?.({ phase: "reading", page: listing.page, pages: Math.max(1, listing.pages) });
       for (const article of listing.items) {
         if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
           candidateIds.add(article.id);
@@ -747,19 +748,13 @@
       }
       page += 1;
     }
-    const total = candidates.length;
-    const reportProgress = () => {
-      if (onProgress !== void 0 && total > 0) {
-        onProgress(pulled + failed + skipped, total);
-      }
-    };
     try {
-      reportProgress();
-      for (const article of candidates) {
+      for (const [i, article] of candidates.entries()) {
         if (pulled >= limit) {
           limitHit = true;
           break;
         }
+        onProgress?.({ phase: "downloading", index: i + 1, total: candidates.length, title: article.title });
         const filename = chooseFilename(article.title, article.id, names);
         names.add(filename);
         const dest = `${WALLABAG_DIR}/${filename}`;
@@ -780,13 +775,9 @@
           record(article, filename, "failed");
         }
         pulledIds.add(article.id);
-        reportProgress();
       }
     } finally {
-      await deps.writeFile(
-        SYNC_STATE_PATH,
-        encodeBase64Utf8(JSON.stringify(nextState))
-      );
+      await deps.writeFile(SYNC_STATE_PATH, encodeBase64Utf8(JSON.stringify(nextState)));
     }
     return {
       pulled,
