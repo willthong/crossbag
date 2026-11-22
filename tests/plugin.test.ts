@@ -209,6 +209,34 @@ describe('setup wizard form', () => {
     expect(buttonByText(container, 'Save')).toBeDefined();
   });
 
+  it('gives each action button its own colour variant', () => {
+    const container = document.createElement('div');
+
+    renderForm(container, makeApi());
+
+    const variants = ['Test Connection', 'Save', 'Sync'].map(
+      (label) => buttonByText(container, label).className,
+    );
+
+    expect(variants).toEqual([
+      'cbag-btn cbag-btn-secondary',
+      'cbag-btn cbag-btn-primary',
+      'cbag-btn cbag-btn-accent',
+    ]);
+  });
+
+  it('injects its stylesheet once even when the form renders twice', () => {
+    const first = document.createElement('div');
+    renderForm(first, makeApi());
+
+    const styles = first.querySelectorAll('style[data-cbag-styles]');
+    expect(styles).toHaveLength(1);
+    expect(styles[0]?.textContent ?? '').toContain('.cbag-btn-primary');
+
+    renderForm(first, makeApi());
+    expect(first.querySelectorAll('style[data-cbag-styles]')).toHaveLength(1);
+  });
+
   it('saves the form values as UTF-8 JSON in config.json', async () => {
     const container = document.createElement('div');
     const api = makeApi();

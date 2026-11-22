@@ -3,6 +3,12 @@
 ## 0.1.0
 
 - Initial release: setup wizard, on-reader catalog, and EPUB download.
+- Feature: the wizard's **Test Connection**, **Save** and **Sync** buttons are
+  now coloured (neutral, blue, green) instead of looking like bare browser
+  buttons. The styling ships in the plugin's own `<style>` block, namespaced
+  under `.cbag-*`, because the plugin API exposes no firmware component CSS.
+  Includes hover/active/focus states, a dimmed disabled Sync while it runs, and
+  a `prefers-color-scheme: dark` variant.
 - Feature: opt-in **Date-prefixed filenames** (`date_prefixed_filenames`).
   With it on, Sync names each newly-downloaded EPUB `YYMMDD-title.epub`
   using the article's wallabag added date (`created_at`), so a sorted

@@ -362,16 +362,61 @@ async function saveConfig(
   }
 }
 
+/**
+ * Button styling for the wizard, kept in the plugin rather than borrowed from
+ * the firmware's WebUI: the plugin API hands us a bare container and promises
+ * nothing about the host's stylesheet or class names.
+ */
+const BUTTON_STYLES = `
+.cbag-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; }
+.cbag-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: filter 120ms ease, box-shadow 120ms ease;
+}
+.cbag-btn:hover:enabled { filter: brightness(1.08); }
+.cbag-btn:active:enabled { filter: brightness(0.92); }
+.cbag-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.cbag-btn:disabled { cursor: progress; opacity: 0.6; }
+.cbag-btn-secondary { background: #e2e8f0; border-color: #cbd5e1; color: #1e293b; }
+.cbag-btn-primary { background: #2563eb; border-color: #1d4ed8; color: #ffffff; }
+.cbag-btn-accent { background: #059669; border-color: #047857; color: #ffffff; }
+@media (prefers-color-scheme: dark) {
+  .cbag-btn-secondary { background: #334155; border-color: #475569; color: #f1f5f9; }
+  .cbag-btn-primary { background: #3b82f6; border-color: #2563eb; }
+  .cbag-btn-accent { background: #10b981; border-color: #059669; }
+}
+`;
+
+/** Inject the wizard's stylesheet once, however often the form re-renders. */
+function ensureButtonStyles(container: HTMLElement): void {
+  if (container.querySelector('style[data-cbag-styles]') !== null) {
+    return;
+  }
+  const style = document.createElement('style');
+  style.setAttribute('data-cbag-styles', '');
+  style.textContent = BUTTON_STYLES;
+  container.append(style);
+}
+
 function addButton(
-  form: HTMLFormElement,
+  parent: HTMLElement,
   label: string,
+  variant: 'secondary' | 'primary' | 'accent',
   onClick: () => void,
 ): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
+  button.className = `cbag-btn cbag-btn-${variant}`;
   button.textContent = label;
   button.addEventListener('click', onClick);
-  form.append(button);
+  parent.append(button);
   return button;
 }
 
@@ -531,18 +576,24 @@ export function renderForm(
   const status = document.createElement('p');
   status.setAttribute('data-sync-status', '');
 
-  addButton(form, 'Test Connection', () => {
+  const actions = document.createElement('div');
+  actions.className = 'cbag-actions';
+
+  addButton(actions, 'Test Connection', 'secondary', () => {
     void testConnection(inputs, api, alert);
   });
-  addButton(form, 'Save', () => {
+  addButton(actions, 'Save', 'primary', () => {
     void saveConfig(inputs, api, alert);
   });
-  const syncButton = addButton(form, 'Sync', () => {
+  const syncButton = addButton(actions, 'Sync', 'accent', () => {
     void syncArticles(api, status, fetchImpl, syncButton);
   });
 
+  form.append(actions);
   form.append(status);
   form.append(alert);
+
+  ensureButtonStyles(container);
   container.append(form);
 }
 
