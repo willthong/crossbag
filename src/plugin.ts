@@ -16,6 +16,7 @@ export interface SetupFormValues {
   username: string;
   password: string;
   syncLimit: string;
+  datePrefixedFilenames: string;
 }
 
 export interface TestRequest {
@@ -33,7 +34,7 @@ export interface TokenRequest {
 interface FieldSpec {
   name: keyof SetupFormValues;
   label: string;
-  type: 'text' | 'password' | 'number';
+  type: 'text' | 'password' | 'number' | 'checkbox';
   value: string;
   min?: string;
   max?: string;
@@ -54,6 +55,12 @@ const FIELDS: readonly FieldSpec[] = [
     value: String(SYNC_LIMIT_DEFAULT),
     min: String(SYNC_LIMIT_MIN),
     max: String(SYNC_LIMIT_MAX),
+  },
+  {
+    name: 'datePrefixedFilenames',
+    label: 'Date-prefixed filenames',
+    type: 'checkbox',
+    value: 'false',
   },
 ];
 
@@ -139,6 +146,7 @@ export function buildConfig(values: SetupFormValues): WallabagConfig {
     // wizard stores the finished, encoded body for it to send verbatim.
     auth_body: buildTokenRequest(values).body,
     sync_limit: parseSyncLimit(values.syncLimit),
+    date_prefixed_filenames: values.datePrefixedFilenames === 'true',
   };
 }
 
@@ -179,6 +187,9 @@ function readValues(inputs: InputMap): SetupFormValues {
     username: inputs.username.value,
     password: inputs.password.value,
     syncLimit: inputs.syncLimit.value,
+    datePrefixedFilenames: inputs.datePrefixedFilenames.checked
+      ? 'true'
+      : 'false',
   };
 }
 
@@ -438,6 +449,13 @@ async function syncArticles(
 function applyPrefill(inputs: InputMap, values: SetupFormValues): void {
   for (const field of FIELDS) {
     const input = inputs[field.name];
+    if (field.type === 'checkbox') {
+      // A checkbox has no editable text; untouched means still at its default.
+      if (input.checked === (field.value === 'true')) {
+        input.checked = values[field.name] === 'true';
+      }
+      continue;
+    }
     if (input.value === field.value) {
       input.value = values[field.name];
     }
@@ -483,7 +501,11 @@ export function renderForm(
     const input = document.createElement('input');
     input.type = field.type;
     input.name = field.name;
-    input.value = field.value;
+    if (field.type === 'checkbox') {
+      input.checked = field.value === 'true';
+    } else {
+      input.value = field.value;
+    }
     if (field.min !== undefined) {
       input.min = field.min;
     }
@@ -549,8 +571,10 @@ export function chooseFilename(
   title: string,
   id: number,
   existing: ReadonlySet<string>,
+  datePrefix?: string,
 ): string {
-  const base = sanitizeFilenamePart(title);
+  const sanitized = sanitizeFilenamePart(title);
+  const base = datePrefix ? `${datePrefix}-${sanitized}` : sanitized;
   const taken = new Set([...existing].map((name) => name.toLowerCase()));
   const isTaken = (candidate: string): boolean =>
     taken.has(candidate.toLowerCase());
@@ -854,10 +878,27 @@ const CONFIG_PATH = 'config.json';
 const ENTRIES_PER_PAGE = 8;
 const MIN_ENTRIES_PER_PAGE = 1;
 
-/** An unread article as Sync needs it: an id and a title. */
+/** An unread article as Sync needs it: an id, a title and its added date. */
 interface SyncArticle {
   id: number;
   title: string;
+  created_at: string;
+}
+
+/**
+ * The `YYMMDD` prefix for an ISO timestamp's leading date, so a lexical sort
+ * is chronological. Returns '' unless the value starts with a valid ISO
+ * date-time, so malformed or impossible dates never produce a bogus prefix.
+ */
+function formatDatePrefix(createdAt: string): string {
+  const startsWithIsoDateTime =
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/.test(
+      createdAt,
+    );
+  if (!startsWithIsoDateTime || Number.isNaN(Date.parse(createdAt))) {
+    return '';
+  }
+  return `${createdAt.slice(2, 4)}${createdAt.slice(5, 7)}${createdAt.slice(8, 10)}`;
 }
 
 /** One decoded page of the unread entry listing. */
@@ -876,6 +917,8 @@ function configValues(config: WallabagConfig): SetupFormValues {
     username: config.username,
     password: config.password,
     syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
+    datePrefixedFilenames:
+      config.date_prefixed_filenames === true ? 'true' : 'false',
   };
 }
 
@@ -968,11 +1011,15 @@ function parseEntriesPage(body: string): EntriesPage | undefined {
     if (!isRecord(item)) {
       return undefined;
     }
-    const { id, title } = item;
+    const { id, title, created_at } = item;
     if (typeof id !== 'number' || !Number.isInteger(id)) {
       return undefined;
     }
-    items.push({ id, title: typeof title === 'string' ? title : '' });
+    items.push({
+      id,
+      title: typeof title === 'string' ? title : '',
+      created_at: typeof created_at === 'string' ? created_at : '',
+    });
   }
 
   return {
@@ -1230,7 +1277,15 @@ export async function runSync(
 
       onProgress?.({ phase: 'downloading', index: i + 1, total: candidates.length, title: article.title });
 
-      const filename = chooseFilename(article.title, article.id, names);
+      const datePrefix = config.date_prefixed_filenames
+        ? formatDatePrefix(article.created_at)
+        : undefined;
+      const filename = chooseFilename(
+        article.title,
+        article.id,
+        names,
+        datePrefix,
+      );
       names.add(filename);
       const dest = `${WALLABAG_DIR}/${filename}`;
       const exportUrl =

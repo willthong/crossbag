@@ -161,6 +161,23 @@ describe('wallabag config sync limit', () => {
   });
 });
 
+describe('wallabag config date prefix', () => {
+  it('accepts the date-prefixed filenames flag the wizard writes', () => {
+    const parsed = WallabagConfigSchema.parse({
+      ...wizardConfig,
+      date_prefixed_filenames: true,
+    });
+
+    expect(parsed.date_prefixed_filenames).toBe(true);
+  });
+
+  it('leaves the flag off for configs written before it existed', () => {
+    const parsed = WallabagConfigSchema.parse({ ...wizardConfig });
+
+    expect(parsed.date_prefixed_filenames).toBeFalsy();
+  });
+});
+
 describe('wallabag config auth body', () => {
   it('accepts the pre-encoded token body the wizard writes', () => {
     const authBody = 'grant_type=password&client_id=crossbag-client';

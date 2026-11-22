@@ -60,6 +60,8 @@ export const WallabagConfigSchema = z.object({
   // otherwise corrupt the password grant.
   auth_body: z.string().optional(),
   sync_limit: z.number().int().min(1).max(500).optional(),
+  // Optional so configs written before the flag existed keep today's naming.
+  date_prefixed_filenames: z.boolean().optional(),
 });
 
 export type WallabagTag = z.infer<typeof WallabagTagSchema>;

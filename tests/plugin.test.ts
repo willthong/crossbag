@@ -25,6 +25,7 @@ const formValues: SetupFormValues = {
   username: 'café ☕',
   password: 'pässwörd',
   syncLimit: '50',
+  datePrefixedFilenames: 'false',
 };
 
 function makeApi(relayResponse: RelayResponse = { status: 200, body: '{}' }) {
@@ -92,6 +93,7 @@ describe('setup wizard config', () => {
       password: 'pässwörd',
       auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
+      date_prefixed_filenames: false,
     });
   });
 
@@ -197,6 +199,7 @@ describe('setup wizard form', () => {
     expect(names).toEqual([
       'clientId',
       'clientSecret',
+      'datePrefixedFilenames',
       'password',
       'serverUrl',
       'syncLimit',
@@ -237,6 +240,7 @@ describe('setup wizard form', () => {
       password: 'pässwörd',
       auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
+      date_prefixed_filenames: false,
     });
   });
 
@@ -703,6 +707,40 @@ function mountSync(options: SyncMountOptions) {
   return { container, api, fetchImpl };
 }
 
+describe('setup wizard date-prefixed filenames', () => {
+  it('renders a date-prefixed filenames checkbox, unchecked by default', () => {
+    const container = document.createElement('div');
+
+    renderForm(container, makeApi());
+
+    const input = container.querySelector<HTMLInputElement>(
+      'input[name="datePrefixedFilenames"]',
+    );
+
+    expect(input, 'missing date prefix checkbox').not.toBeNull();
+    expect(input?.type).toBe('checkbox');
+    expect(input?.checked).toBe(false);
+  });
+
+  it('maps the checkbox to date_prefixed_filenames in config.json', () => {
+    const flagFor = (datePrefixedFilenames: string): boolean | undefined =>
+      buildConfig({ ...formValues, datePrefixedFilenames })
+        .date_prefixed_filenames;
+
+    expect(flagFor('true')).toBe(true);
+    expect(flagFor('false')).toBe(false);
+  });
+
+  it('keeps the flag off when an old saved form value has no checkbox', () => {
+    const legacy: Partial<SetupFormValues> = { ...formValues };
+    delete legacy.datePrefixedFilenames;
+
+    const config = buildConfig(legacy as SetupFormValues);
+
+    expect(config.date_prefixed_filenames).toBe(false);
+  });
+});
+
 describe('setup wizard prefill', () => {
   const savedConfig: WallabagConfig = {
     ...SYNC_CONFIG,
@@ -820,6 +858,33 @@ describe('setup wizard prefill', () => {
       );
     });
     expect(inputByName(container, 'username').value).toBe('typed-user');
+  });
+
+  it('checks the date prefix box when the saved config has the flag on', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+    const withPrefix = {
+      ...savedConfig,
+      date_prefixed_filenames: true,
+    };
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], config: withPrefix }),
+    );
+
+    renderForm(container, api, fetchImpl);
+
+    await vi.waitFor(() => {
+      expect(inputByName(container, 'serverUrl').value).toBe(
+        savedConfig.server_url,
+      );
+    });
+
+    const input = container.querySelector<HTMLInputElement>(
+      'input[name="datePrefixedFilenames"]',
+    );
+
+    expect(input, 'missing date prefix checkbox').not.toBeNull();
+    expect(input?.checked).toBe(true);
   });
 });
 

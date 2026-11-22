@@ -3,6 +3,11 @@
 ## 0.1.0
 
 - Initial release: setup wizard, on-reader catalog, and EPUB download.
+- Feature: opt-in **Date-prefixed filenames** (`date_prefixed_filenames`).
+  With it on, Sync names each newly-downloaded EPUB `YYMMDD-title.epub`
+  using the article's wallabag added date (`created_at`), so a sorted
+  `/Wallabag` is chronological (oldest first). Off by default. Existing
+  files are not renamed, and catalog downloads stay `{title}.epub`.
 - Fix: reopening the setup wizard now prefills the saved server URL, client
   ID, client secret, username, password, and sync limit from `config.json`.
   A missing or malformed config still shows the first-time defaults.

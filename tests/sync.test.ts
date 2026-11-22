@@ -15,14 +15,22 @@ function configWithLimit(syncLimit: number): WallabagConfig {
   return { ...CONFIG, sync_limit: syncLimit };
 }
 
+function configWithPrefix(datePrefixedFilenames: boolean): WallabagConfig {
+  return { ...CONFIG, date_prefixed_filenames: datePrefixedFilenames };
+}
+
 /** A wallabag article, with the minimum fields the entries schema requires. */
-function entry(id: number, title = `Article ${id}`): Record<string, unknown> {
+function entry(
+  id: number,
+  title = `Article ${id}`,
+  createdAt = '2024-01-01T00:00:00+0000',
+): Record<string, unknown> {
   return {
     id,
     title,
     url: `https://example.com/articles/${id}`,
     domain_name: 'example.com',
-    created_at: '2024-01-01T00:00:00+0000',
+    created_at: createdAt,
     updated_at: '2024-01-01T00:00:00+0000',
     is_archived: 0,
     is_starred: 0,
@@ -32,13 +40,15 @@ function entry(id: number, title = `Article ${id}`): Record<string, unknown> {
 
 function entriesPage(
   ids: number[],
-  meta: { page?: number; pages?: number } = {},
+  meta: { page?: number; pages?: number; createdAt?: string } = {},
 ): string {
   return JSON.stringify({
     page: meta.page ?? 1,
     pages: meta.pages ?? 1,
     total: ids.length,
-    _embedded: { items: ids.map((id) => entry(id)) },
+    _embedded: {
+      items: ids.map((id) => entry(id, undefined, meta.createdAt)),
+    },
   });
 }
 
@@ -86,6 +96,7 @@ interface HarnessOptions {
   tokenThrows?: Error;
   fetchOutcome?: (id: number) => FetchOutcome | Promise<FetchOutcome>;
   listError?: Error;
+  createdAt?: string;
   pageError?: (
     page: number,
   ) => Error | { status: number; body: string } | undefined;
@@ -124,7 +135,11 @@ function makeHarness(options: HarnessOptions) {
     const ids = options.pages[page - 1] ?? [];
     return {
       status: 200,
-      body: entriesPage(ids, { page, pages: options.pages.length }),
+      body: entriesPage(ids, {
+        page,
+        pages: options.pages.length,
+        createdAt: options.createdAt,
+      }),
     };
   });
 
@@ -407,6 +422,57 @@ describe('runSync downloads', () => {
     }
     expect(result.pulled).toBe(2);
   });
+});
+
+describe('runSync date-prefixed filenames', () => {
+  it('prefixes a downloaded EPUB with its added date when enabled', async () => {
+    const harness = makeHarness({ pages: [[1]] });
+
+    await runSync(harness.deps, configWithPrefix(true));
+
+    expect(harness.fetchCalls.map((call) => call.dest)).toEqual([
+      '/Wallabag/240101-Article 1.epub',
+    ]);
+  });
+
+  it('leaves filenames unprefixed when the flag is off or absent', async () => {
+    const off = makeHarness({ pages: [[1]] });
+    await runSync(off.deps, configWithPrefix(false));
+    expect(off.fetchCalls.map((call) => call.dest)).toEqual([
+      '/Wallabag/Article 1.epub',
+    ]);
+
+    const absent = makeHarness({ pages: [[1]] });
+    await runSync(absent.deps, CONFIG);
+    expect(absent.fetchCalls.map((call) => call.dest)).toEqual([
+      '/Wallabag/Article 1.epub',
+    ]);
+  });
+
+  it('falls back to the unprefixed name when created_at cannot be parsed', async () => {
+    const harness = makeHarness({ pages: [[1]], createdAt: 'not-a-date' });
+
+    const result = await runSync(harness.deps, configWithPrefix(true));
+
+    expect(harness.fetchCalls.map((call) => call.dest)).toEqual([
+      '/Wallabag/Article 1.epub',
+    ]);
+    expect(result.pulled).toBe(1);
+  });
+
+  it.each(['2024-13-45T00:00:00+0000', '2024-01-01junk'])(
+    'downloads %s unprefixed without throwing',
+    async (createdAt) => {
+      const harness = makeHarness({ pages: [[1]], createdAt });
+
+      const result = await runSync(harness.deps, configWithPrefix(true));
+
+      expect(harness.fetchCalls.map((call) => call.dest)).toEqual([
+        '/Wallabag/Article 1.epub',
+      ]);
+      expect(result.pulled).toBe(1);
+    },
+  );
 });
 
 describe('runSync phase progress', () => {

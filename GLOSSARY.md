@@ -10,6 +10,20 @@ A saved web page in wallabag. Each article has a title, URL, domain, tags,
 and archived/starred status. The plugin downloads articles as EPUBs.
 _Avoid_: Story, entry (wallabag's API name — use "article" in our domain).
 
+**Added date**:
+An article's wallabag `created_at` timestamp — when it was saved to wallabag.
+It is the article's canonical sort key (the catalog browses by it, and the
+filename date prefix encodes it so the local `/Wallabag` listing sorts in the
+same order).
+_Avoid_: creation date, published date (that is `published_at`, a different
+timestamp).
+
+**Date prefix**:
+An optional `YYMMDD-` prefix Sync prepends to a downloaded EPUB's filename so
+a local `/Wallabag` listing sorts by the article's added date, oldest first.
+Enabled by the `date_prefixed_filenames` config flag (off by default).
+_Avoid_: sort prefix, timestamp prefix, date stamp.
+
 **Plugin Hub**:
 The CrossPoint SD-card plugin that discovers, installs, updates, and removes
 other plugins. Crossbag is published through Plugin Hub's Community Plugins

@@ -9,7 +9,8 @@ Two interfaces with a strict split:
 ```
 plugin.js   →  setup wizard + Sync (browser on phone/computer)
                - Form: server URL, client ID, client secret, username,
-                 password, sync_limit; prefilled from config.json when saved
+                 password, sync_limit, date_prefixed_filenames; prefilled
+                 from config.json when saved
                - "Test Connection" button → api.relay()
                  (server URL is trimmed and must be a full http(s)://host
                  address; a device relay failure is reported in words)
@@ -39,8 +40,8 @@ crossbag.crosspoint-plugin/
 Runtime files in the plugin folder on the SD card, not listed in
 `manifest.json → files`:
 
-- `config.json` — credentials, the pre-encoded `auth_body`, and `sync_limit`
-  written by the wizard
+- `config.json` — credentials, the pre-encoded `auth_body`, `sync_limit`, and
+  `date_prefixed_filenames` written by the wizard
 - `sync-state.json` — Sync's ledger of attempted articles and statuses
 
 ## Wallabag API integration

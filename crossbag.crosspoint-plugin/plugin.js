@@ -18,6 +18,12 @@
       value: String(SYNC_LIMIT_DEFAULT),
       min: String(SYNC_LIMIT_MIN),
       max: String(SYNC_LIMIT_MAX)
+    },
+    {
+      name: "datePrefixedFilenames",
+      label: "Date-prefixed filenames",
+      type: "checkbox",
+      value: "false"
     }
   ];
   function clampSyncLimit(value) {
@@ -75,7 +81,8 @@
       // The on-reader catalog cannot form-encode config values itself, so the
       // wizard stores the finished, encoded body for it to send verbatim.
       auth_body: buildTokenRequest(values).body,
-      sync_limit: parseSyncLimit(values.syncLimit)
+      sync_limit: parseSyncLimit(values.syncLimit),
+      date_prefixed_filenames: values.datePrefixedFilenames === "true"
     };
   }
   function buildTokenRequest(values) {
@@ -106,7 +113,8 @@
       clientSecret: inputs.clientSecret.value,
       username: inputs.username.value,
       password: inputs.password.value,
-      syncLimit: inputs.syncLimit.value
+      syncLimit: inputs.syncLimit.value,
+      datePrefixedFilenames: inputs.datePrefixedFilenames.checked ? "true" : "false"
     };
   }
   function describeError(error) {
@@ -285,6 +293,12 @@
   function applyPrefill(inputs, values) {
     for (const field of FIELDS) {
       const input = inputs[field.name];
+      if (field.type === "checkbox") {
+        if (input.checked === (field.value === "true")) {
+          input.checked = values[field.name] === "true";
+        }
+        continue;
+      }
       if (input.value === field.value) {
         input.value = values[field.name];
       }
@@ -313,7 +327,11 @@
       const input = document.createElement("input");
       input.type = field.type;
       input.name = field.name;
-      input.value = field.value;
+      if (field.type === "checkbox") {
+        input.checked = field.value === "true";
+      } else {
+        input.value = field.value;
+      }
       if (field.min !== void 0) {
         input.min = field.min;
       }
@@ -355,8 +373,9 @@
     const parts = path.split("/");
     return parts[parts.length - 1] ?? path;
   }
-  function chooseFilename(title, id, existing) {
-    const base = sanitizeFilenamePart(title);
+  function chooseFilename(title, id, existing, datePrefix) {
+    const sanitized = sanitizeFilenamePart(title);
+    const base = datePrefix ? `${datePrefix}-${sanitized}` : sanitized;
     const taken = new Set([...existing].map((name) => name.toLowerCase()));
     const isTaken = (candidate) => taken.has(candidate.toLowerCase());
     const preferred = `${base}.epub`;
@@ -518,6 +537,15 @@
   var CONFIG_PATH = "config.json";
   var ENTRIES_PER_PAGE = 8;
   var MIN_ENTRIES_PER_PAGE = 1;
+  function formatDatePrefix(createdAt) {
+    const startsWithIsoDateTime = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/.test(
+      createdAt
+    );
+    if (!startsWithIsoDateTime || Number.isNaN(Date.parse(createdAt))) {
+      return "";
+    }
+    return `${createdAt.slice(2, 4)}${createdAt.slice(5, 7)}${createdAt.slice(8, 10)}`;
+  }
   function configValues(config) {
     return {
       serverUrl: config.server_url,
@@ -525,7 +553,8 @@
       clientSecret: config.client_secret,
       username: config.username,
       password: config.password,
-      syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT)
+      syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
+      datePrefixedFilenames: config.date_prefixed_filenames === true ? "true" : "false"
     };
   }
   function syncLimitOf(config) {
@@ -595,11 +624,15 @@
       if (!isRecord(item)) {
         return void 0;
       }
-      const { id, title } = item;
+      const { id, title, created_at } = item;
       if (typeof id !== "number" || !Number.isInteger(id)) {
         return void 0;
       }
-      items.push({ id, title: typeof title === "string" ? title : "" });
+      items.push({
+        id,
+        title: typeof title === "string" ? title : "",
+        created_at: typeof created_at === "string" ? created_at : ""
+      });
     }
     return {
       items,
@@ -789,7 +822,13 @@
           break;
         }
         onProgress?.({ phase: "downloading", index: i + 1, total: candidates.length, title: article.title });
-        const filename = chooseFilename(article.title, article.id, names);
+        const datePrefix = config.date_prefixed_filenames ? formatDatePrefix(article.created_at) : void 0;
+        const filename = chooseFilename(
+          article.title,
+          article.id,
+          names,
+          datePrefix
+        );
         names.add(filename);
         const dest = `${WALLABAG_DIR}/${filename}`;
         const exportUrl = `${normalizeServerUrl(config.server_url)}/api/entries/${article.id}/export.epub`;

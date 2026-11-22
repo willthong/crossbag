@@ -69,6 +69,21 @@ describe('chooseFilename', () => {
     expect(chosen).toBe('Weekly digest-4242.epub');
   });
 
+  it('prefixes the filename with the added date when one is given', () => {
+    expect(chooseFilename('Weekly digest', 4242, new Set(), '240101')).toBe(
+      '240101-Weekly digest.epub',
+    );
+
+    const sameDay = new Set(['240101-Weekly digest.epub']);
+    expect(chooseFilename('Weekly digest', 4242, sameDay, '240101')).toBe(
+      '240101-Weekly digest-4242.epub',
+    );
+
+    expect(chooseFilename('Weekly digest', 4242, new Set())).toBe(
+      'Weekly digest.epub',
+    );
+  });
+
   it('compares collisions case-insensitively, as FAT does', () => {
     const existing = new Set(['WEEKLY DIGEST.EPUB']);
 

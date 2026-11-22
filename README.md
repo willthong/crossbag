@@ -181,6 +181,12 @@ the plugin folder on the SD card.
 **Articles per sync** sets `sync_limit` (default 50, range 1–500). Sync always
 reads the saved `config.json`; if it is missing, save your credentials first.
 
+**Date-prefixed filenames** (`date_prefixed_filenames`, off by default) makes
+Sync name each newly-downloaded EPUB `YYMMDD-title.epub`, using the article's
+wallabag added date. A sorted `/Wallabag` then reads oldest-first by date
+instead of alphabetically by title. Only Sync honours it: it never renames
+files already on the card, and catalog downloads stay `{title}.epub`.
+
 Your `config.json` is stored unencrypted on the SD card, including the client
 secret and your wallabag password. Treat the card as sensitive.
 
