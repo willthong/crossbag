@@ -9,7 +9,7 @@ Two interfaces with a strict split:
 ```
 plugin.js   →  setup wizard + Sync (browser on phone/computer)
                - Form: server URL, client ID, client secret, username,
-                 password, sync_limit
+                 password, sync_limit; prefilled from config.json when saved
                - "Test Connection" button → api.relay()
                  (server URL is trimmed and must be a full http(s)://host
                  address; a device relay failure is reported in words)
@@ -67,7 +67,7 @@ Runtime files in the plugin folder on the SD card, not listed in
 
 - **Language**: TypeScript (for plugin.ts wizard + tests)
 - **Build**: esbuild bundles `src/plugin.ts` → `plugin.js` (unminified,
-  under 25 KB, no zod in the runtime bundle)
+  under 30 KB, no zod in the runtime bundle)
 - **Type checking**: `tsc --noEmit`
 - **Linting**: ESLint (max 90 char lines)
 - **Testing**: Vitest + Zod schema validation

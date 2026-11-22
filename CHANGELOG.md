@@ -3,6 +3,9 @@
 ## 0.1.0
 
 - Initial release: setup wizard, on-reader catalog, and EPUB download.
+- Fix: reopening the setup wizard now prefills the saved server URL, client
+  ID, client secret, username, password, and sync limit from `config.json`.
+  A missing or malformed config still shows the first-time defaults.
 - Fix: Sync asked wallabag for 16 metadata entries per page, but a page can
   exceed the device relay's ~32 KB cap (wallabag includes each article's URLs,
   tags, annotations and original HTTP headers even with `detail=metadata`).

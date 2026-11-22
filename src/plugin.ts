@@ -434,6 +434,40 @@ async function syncArticles(
   }
 }
 
+/** Fill only fields the person has not edited since the form rendered. */
+function applyPrefill(inputs: InputMap, values: SetupFormValues): void {
+  for (const field of FIELDS) {
+    const input = inputs[field.name];
+    if (input.value === field.value) {
+      input.value = values[field.name];
+    }
+  }
+}
+
+/** Load saved form values, or undefined when there is no usable config. */
+async function loadPrefillValues(
+  api: CrossPointApi,
+  fetchImpl: FetchLike,
+): Promise<SetupFormValues | undefined> {
+  if (api.dir === undefined || api.dir === '') {
+    return undefined;
+  }
+
+  // Only read when the device exposes file access or the caller supplied a
+  // way to fetch; otherwise the page fetch would be an unrelated network hit.
+  if (asSyncApi(api) === undefined && fetchImpl === globalThis.fetch) {
+    return undefined;
+  }
+
+  try {
+    const deps = buildSyncDeps(api, fetchImpl);
+    return configValues(await loadSavedConfig(deps));
+  } catch {
+    // A missing or malformed config just means this is a first-time setup.
+    return undefined;
+  }
+}
+
 /** Render the setup wizard into the container and wire its buttons. */
 export function renderForm(
   container: HTMLElement,
@@ -460,6 +494,14 @@ export function renderForm(
     form.append(label);
     inputs[field.name] = input;
   }
+
+  // The read is async, so leave the buttons usable and only fill fields that
+  // still hold their defaults; an edit made while the read runs wins.
+  void loadPrefillValues(api, fetchImpl).then((values) => {
+    if (values !== undefined) {
+      applyPrefill(inputs, values);
+    }
+  });
 
   const alert = document.createElement('p');
   alert.setAttribute('role', 'alert');
@@ -760,13 +802,24 @@ export function pluginFilePath(
   return `${pluginDir}/${name}`;
 }
 
+/** Device capabilities needed to read and write plugin files. */
+type SyncDepsApi = Omit<SyncApi, 'fetchToSd'> &
+  Partial<Pick<SyncApi, 'fetchToSd'>>;
+
 /** Wire the firmware `api` and the page's `fetch` into SyncDeps. */
-export function buildSyncDeps(api: SyncApi, fetchImpl: FetchLike): SyncDeps {
+export function buildSyncDeps(api: SyncDepsApi, fetchImpl: FetchLike): SyncDeps {
   return {
     relay: async (method, url, headers, body) => {
       return await api.relay(method, url, headers, body);
     },
-    fetchToSd: (url, dest, headers) => api.fetchToSd(url, dest, headers),
+    fetchToSd: async (url, dest, headers) => {
+      if (typeof api.fetchToSd !== 'function') {
+        throw new Error(
+          'Sync is unavailable: the device API has no file download.',
+        );
+      }
+      return await api.fetchToSd(url, dest, headers);
+    },
     writeFile: async (path, dataB64) => {
       await api.writeFile(pluginFilePath(api.dir, path), dataB64);
       return { ok: true };

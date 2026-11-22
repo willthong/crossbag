@@ -703,6 +703,126 @@ function mountSync(options: SyncMountOptions) {
   return { container, api, fetchImpl };
 }
 
+describe('setup wizard prefill', () => {
+  const savedConfig: WallabagConfig = {
+    ...SYNC_CONFIG,
+    server_url: 'https://saved.example.com',
+    client_id: 'saved-client',
+    client_secret: 'saved-secret',
+    username: 'saved-user',
+    password: 'saved-password',
+    sync_limit: 25,
+  };
+
+  it('shows the saved config values when config.json is readable', async () => {
+    const container = document.createElement('div');
+    // Prefill only needs file reading, not Sync's download capability.
+    const api = makeApi();
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], config: savedConfig }),
+    );
+
+    renderForm(container, api, fetchImpl);
+
+    await vi.waitFor(() => {
+      expect(inputByName(container, 'serverUrl').value).toBe(
+        savedConfig.server_url,
+      );
+      expect(inputByName(container, 'clientId').value).toBe(
+        savedConfig.client_id,
+      );
+      expect(inputByName(container, 'clientSecret').value).toBe(
+        savedConfig.client_secret,
+      );
+      expect(inputByName(container, 'username').value).toBe(
+        savedConfig.username,
+      );
+      expect(inputByName(container, 'password').value).toBe(
+        savedConfig.password,
+      );
+      expect(inputByName(container, 'syncLimit').value).toBe('25');
+    });
+
+    // The saved password is prefilled but stays obscured in the browser.
+    expect(inputByName(container, 'password').type).toBe('password');
+  });
+
+  it('keeps the defaults when config.json is missing', async () => {
+    const container = document.createElement('div');
+    const api = makeSyncApi({ articleIds: [] });
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], config: null }),
+    );
+
+    renderForm(container, api, fetchImpl);
+
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(inputByName(container, 'serverUrl').value).toBe('https://');
+    expect(inputByName(container, 'clientId').value).toBe('');
+    expect(inputByName(container, 'clientSecret').value).toBe('');
+    expect(inputByName(container, 'username').value).toBe('');
+    expect(inputByName(container, 'password').value).toBe('');
+    expect(inputByName(container, 'syncLimit').value).toBe('50');
+  });
+
+  it('keeps the defaults when config.json is malformed', async () => {
+    const container = document.createElement('div');
+    const api = makeSyncApi({ articleIds: [] });
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], configBody: '{not json' }),
+    );
+
+    renderForm(container, api, fetchImpl);
+
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(inputByName(container, 'serverUrl').value).toBe('https://');
+    expect(inputByName(container, 'syncLimit').value).toBe('50');
+  });
+
+  it('skips the read when api.dir is absent', async () => {
+    const container = document.createElement('div');
+    const api = { ...makeSyncApi({ articleIds: [] }), dir: '' };
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], config: savedConfig }),
+    );
+
+    renderForm(container, api, fetchImpl);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(inputByName(container, 'serverUrl').value).toBe('https://');
+  });
+
+  it('does not overwrite edits made before the read completes', async () => {
+    const gate = openGate();
+    const container = document.createElement('div');
+    const api = makeSyncApi({ articleIds: [] });
+    const fetchImpl = vi.fn<FetchLike>(async () => {
+      await gate.promise;
+      return textResponse(JSON.stringify(savedConfig));
+    });
+
+    renderForm(container, api, fetchImpl);
+    inputByName(container, 'username').value = 'typed-user';
+    gate.release();
+
+    await vi.waitFor(() => {
+      expect(inputByName(container, 'serverUrl').value).toBe(
+        savedConfig.server_url,
+      );
+    });
+    expect(inputByName(container, 'username').value).toBe('typed-user');
+  });
+});
+
 describe('buildSyncDeps', () => {
   it('wires relay, fetchToSd, writeFile and lists filenames from fetch', async () => {
     const api = makeSyncApi({ articleIds: [] });

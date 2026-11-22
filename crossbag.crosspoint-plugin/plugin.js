@@ -282,6 +282,28 @@
       button.disabled = false;
     }
   }
+  function applyPrefill(inputs, values) {
+    for (const field of FIELDS) {
+      const input = inputs[field.name];
+      if (input.value === field.value) {
+        input.value = values[field.name];
+      }
+    }
+  }
+  async function loadPrefillValues(api, fetchImpl) {
+    if (api.dir === void 0 || api.dir === "") {
+      return void 0;
+    }
+    if (asSyncApi(api) === void 0 && fetchImpl === globalThis.fetch) {
+      return void 0;
+    }
+    try {
+      const deps = buildSyncDeps(api, fetchImpl);
+      return configValues(await loadSavedConfig(deps));
+    } catch {
+      return void 0;
+    }
+  }
   function renderForm(container, api, fetchImpl = globalThis.fetch) {
     const form = document.createElement("form");
     const inputs = {};
@@ -302,6 +324,11 @@
       form.append(label);
       inputs[field.name] = input;
     }
+    void loadPrefillValues(api, fetchImpl).then((values) => {
+      if (values !== void 0) {
+        applyPrefill(inputs, values);
+      }
+    });
     const alert = document.createElement("p");
     alert.setAttribute("role", "alert");
     const status = document.createElement("p");
@@ -456,7 +483,14 @@
       relay: async (method, url, headers, body) => {
         return await api.relay(method, url, headers, body);
       },
-      fetchToSd: (url, dest, headers) => api.fetchToSd(url, dest, headers),
+      fetchToSd: async (url, dest, headers) => {
+        if (typeof api.fetchToSd !== "function") {
+          throw new Error(
+            "Sync is unavailable: the device API has no file download."
+          );
+        }
+        return await api.fetchToSd(url, dest, headers);
+      },
       writeFile: async (path, dataB64) => {
         await api.writeFile(pluginFilePath(api.dir, path), dataB64);
         return { ok: true };
