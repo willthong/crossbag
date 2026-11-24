@@ -18,6 +18,7 @@ export interface SetupFormValues {
   syncLimit: string;
   datePrefixedFilenames: string;
   pruneOnSync: string;
+  syncFavourites: string;
 }
 
 export interface TestRequest {
@@ -68,6 +69,12 @@ const FIELDS: readonly FieldSpec[] = [
     label: 'Prune archived articles',
     type: 'checkbox',
     value: 'true',
+  },
+  {
+    name: 'syncFavourites',
+    label: 'Sync favourite articles',
+    type: 'checkbox',
+    value: 'false',
   },
 ];
 
@@ -157,6 +164,9 @@ export function buildConfig(values: SetupFormValues): WallabagConfig {
     // A form rendered before the checkbox existed omits the key; pruning is
     // the intended default, so only an explicit "off" turns it off.
     prune_on_sync: values.pruneOnSync !== 'false',
+    // Off unless the checkbox was explicitly ticked, which also keeps configs
+    // written before the flag existed on the unread-only mirror.
+    sync_favourites: values.syncFavourites === 'true',
   };
 }
 
@@ -201,6 +211,7 @@ function readValues(inputs: InputMap): SetupFormValues {
       ? 'true'
       : 'false',
     pruneOnSync: inputs.pruneOnSync.checked ? 'true' : 'false',
+    syncFavourites: inputs.syncFavourites.checked ? 'true' : 'false',
   };
 }
 
@@ -1013,6 +1024,7 @@ function configValues(config: WallabagConfig): SetupFormValues {
     datePrefixedFilenames:
       config.date_prefixed_filenames === true ? 'true' : 'false',
     pruneOnSync: config.prune_on_sync === false ? 'false' : 'true',
+    syncFavourites: config.sync_favourites === true ? 'true' : 'false',
   };
 }
 
@@ -1064,14 +1076,18 @@ async function obtainToken(
   return token;
 }
 
-/** Build the metadata-only listing URL for one page of unread articles. */
+/** Which server-side list a walk pages through. */
+type EntriesFilter = { archive: '0' } | { starred: '1' };
+
+/** Build the metadata-only listing URL for one page of articles. */
 function buildEntriesUrl(
   serverUrl: string,
   page: number,
+  filter: EntriesFilter,
   perPage: number = ENTRIES_PER_PAGE,
 ): string {
   const params = new URLSearchParams({
-    archive: '0',
+    ...filter,
     detail: 'metadata',
     sort: 'created',
     order: 'desc',
@@ -1121,6 +1137,102 @@ function parseEntriesPage(body: string): EntriesPage | undefined {
     page: typeof parsed.page === 'number' ? parsed.page : 1,
     pages: typeof parsed.pages === 'number' ? parsed.pages : 1,
   };
+}
+
+interface EntriesWalk {
+  items: SyncArticle[];
+  reachedEnd: boolean;
+  interrupted: boolean;
+  stopReason?: string;
+}
+
+/**
+ * Page through one listing (unread or starred) and collect its articles.
+ * Retrying at a smaller page size discards only this walk's partial results;
+ * the caller's other walk keeps its candidates.
+ */
+async function walkEntries(
+  deps: SyncDeps,
+  config: WallabagConfig,
+  authHeaders: Record<string, string>,
+  filter: EntriesFilter,
+  onProgress?: (progress: SyncProgress) => void,
+): Promise<EntriesWalk> {
+  const items: SyncArticle[] = [];
+  const seen = new Set<number>();
+  let page = 1;
+  let pageSize = ENTRIES_PER_PAGE;
+
+  while (true) {
+    const url = buildEntriesUrl(config.server_url, page, filter, pageSize);
+    let response: { status: number; body: string };
+    try {
+      response = await deps.relay('GET', url, authHeaders);
+    } catch (error) {
+      // The device's relay rejects a reply it cannot buffer (over ~32 KB)
+      // with a 502. Metadata pages can still cross that line, so retry the
+      // walk at half the page size before giving up. Restarting from page 1
+      // discards the partial candidates, which the smaller pages re-discover.
+      if (
+        pageSize > MIN_ENTRIES_PER_PAGE &&
+        describeError(error).includes('large bodies')
+      ) {
+        pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
+        page = 1;
+        items.length = 0;
+        seen.clear();
+        continue;
+      }
+      return {
+        items,
+        reachedEnd: false,
+        interrupted: true,
+        stopReason: describeRelayFailure(error),
+      };
+    }
+
+    if (!isOk(response.status)) {
+      return {
+        items,
+        reachedEnd: false,
+        interrupted: true,
+        stopReason:
+          `page ${page}: ` +
+          describeHttpFailure(response.status, response.body),
+      };
+    }
+
+    const listing = parseEntriesPage(response.body);
+    if (listing === undefined) {
+      return {
+        items,
+        reachedEnd: false,
+        interrupted: true,
+        stopReason: `page ${page}: the entries listing could not be read`,
+      };
+    }
+    if (!listing.items.length) {
+      return { items, reachedEnd: true, interrupted: false };
+    }
+
+    onProgress?.({
+      phase: 'reading',
+      page: listing.page,
+      pages: Math.max(1, listing.pages),
+    });
+
+    for (const article of listing.items) {
+      if (!seen.has(article.id)) {
+        seen.add(article.id);
+        items.push(article);
+      }
+    }
+
+    if (page >= listing.pages) {
+      return { items, reachedEnd: true, interrupted: false };
+    }
+    page += 1;
+  }
 }
 
 /** Decode a JSON body that may arrive either plain or base64 encoded. */
@@ -1244,6 +1356,12 @@ function pruneEnabled(config: WallabagConfig): boolean {
   return config.prune_on_sync !== false;
 }
 
+/** Whether the mirror also includes starred articles (including archived). */
+function syncFavouritesEnabled(config: WallabagConfig): boolean {
+  // Unset means a config written before the flag existed: unread only.
+  return config.sync_favourites === true;
+}
+
 /** The EPUB and sidecar names crossbag recorded for one tracked article. */
 interface TrackedFiles {
   epubs: string[];
@@ -1315,8 +1433,9 @@ export function trackedFiles(
  * Decide whether the server no longer wants an article on the device.
  *
  * Only an authoritative, successful, parseable answer may prune: a `404`, or a
- * `200` whose `is_archived` is truthy. Every failure or surprise keeps the
- * files, because one broken sync must never cost the library.
+ * `200` whose `is_archived` is truthy unless it is also a favourite while
+ * `sync_favourites` is on. Every failure or surprise keeps the files, because
+ * one broken sync must never cost the library.
  */
 async function reconcileArticle(
   deps: SyncDeps,
@@ -1347,7 +1466,15 @@ async function reconcileArticle(
     return 'keep';
   }
 
-  return parsed.is_archived ? 'prune' : 'keep';
+  if (!parsed.is_archived) {
+    return 'keep';
+  }
+
+  // The toggle and Prune must agree: an archived article is only kept when it
+  // is a favourite and favourites belong in the mirror.
+  return syncFavouritesEnabled(config) && parsed.is_starred
+    ? 'keep'
+    : 'prune';
 }
 
 interface PruneOutcome {
@@ -1467,11 +1594,9 @@ export async function runSync(
   let failed = 0;
   let skipped = 0;
   let pruned: number | undefined;
-  let page = 1;
-  let pageSize = ENTRIES_PER_PAGE;
-  let listingReachedEnd = false;
+  let listingReachedEnd: boolean;
   let limitHit = false;
-  let interrupted = false;
+  let interrupted: boolean;
   let stopReason: string | undefined;
 
   const record = (
@@ -1503,74 +1628,46 @@ export async function runSync(
     const pulledIds = computePulledIds(nextState, files, sidecarIds);
     const names = new Set(files.map((name) => basename(name)));
 
-    // Phase 1: walk the entire unread listing before downloading anything, so
-    // the progress total is the real number of articles that need syncing.
-    // The walk only fetches metadata; the downloads happen in phase 2.
+    // Phase 1: walk every enabled listing before downloading anything, so the
+    // progress total is the real number of articles that need syncing. The
+    // walk only fetches metadata; the downloads happen in phase 2. Unread
+    // candidates come first so the shared budget is spent unread-first.
     const candidates: SyncArticle[] = [];
     const candidateIds = new Set<number>();
 
-    while (true) {
-      const url = buildEntriesUrl(config.server_url, page, pageSize);
-      let response: { status: number; body: string };
-      try {
-        response = await deps.relay('GET', url, authHeaders);
-      } catch (error) {
-        // The device's relay rejects a reply it cannot buffer (over ~32 KB)
-        // with a 502. Metadata pages can still cross that line, so retry the
-        // walk at half the page size before giving up. Restarting from page 1
-        // discards the partial candidates, which the smaller pages re-discover.
-        if (
-          pageSize > MIN_ENTRIES_PER_PAGE &&
-          describeError(error).includes('large bodies')
-        ) {
-          pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
-          page = 1;
-          candidates.length = 0;
-          candidateIds.clear();
-          continue;
-        }
-        interrupted = true;
-        stopReason = describeRelayFailure(error);
-        break;
-      }
-
-      if (!isOk(response.status)) {
-        interrupted = true;
-        stopReason =
-          `page ${page}: ` +
-          describeHttpFailure(response.status, response.body);
-        break;
-      }
-
-      const listing = parseEntriesPage(response.body);
-      if (listing === undefined) {
-        interrupted = true;
-        stopReason = `page ${page}: the entries listing could not be read`;
-        break;
-      }
-      if (!listing.items.length) {
-        listingReachedEnd = true;
-        break;
-      }
-
-      onProgress?.({
-        phase: 'reading',
-        page: listing.page,
-        pages: Math.max(1, listing.pages),
-      });
-
-      for (const article of listing.items) {
+    const addWalk = (walk: EntriesWalk): void => {
+      for (const article of walk.items) {
         if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
           candidateIds.add(article.id);
           candidates.push(article);
         }
       }
+    };
 
-      if (page >= listing.pages) {
-        listingReachedEnd = true;
-        break;
-      }
-      page += 1;
+    const unread = await walkEntries(
+      deps,
+      config,
+      authHeaders,
+      { archive: '0' },
+      onProgress,
+    );
+    addWalk(unread);
+    listingReachedEnd = unread.reachedEnd;
+    interrupted = unread.interrupted;
+    stopReason = unread.stopReason;
+
+    if (syncFavouritesEnabled(config) && !interrupted) {
+      const starred = await walkEntries(
+        deps,
+        config,
+        authHeaders,
+        { starred: '1' },
+        onProgress,
+      );
+      addWalk(starred);
+      listingReachedEnd = listingReachedEnd && starred.reachedEnd;
+      interrupted = starred.interrupted;
+      stopReason = starred.stopReason;
     }
 
     // Phase 2: download the candidates newest-first until `sync_limit`

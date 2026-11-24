@@ -65,6 +65,9 @@ export const WallabagConfigSchema = z.object({
   // Optional and pruning by default, so a config written before the flag
   // existed still mirrors the unread list instead of growing forever.
   prune_on_sync: z.boolean().default(true),
+  // Optional and off by default, so a config written before the flag existed
+  // keeps the unread-only mirror.
+  sync_favourites: z.boolean().default(false),
 });
 
 export type WallabagTag = z.infer<typeof WallabagTagSchema>;

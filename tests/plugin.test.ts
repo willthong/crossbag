@@ -27,6 +27,7 @@ const formValues: SetupFormValues = {
   syncLimit: '50',
   datePrefixedFilenames: 'false',
   pruneOnSync: 'true',
+  syncFavourites: 'false',
 };
 
 function makeApi(relayResponse: RelayResponse = { status: 200, body: '{}' }) {
@@ -96,6 +97,7 @@ describe('setup wizard config', () => {
       sync_limit: 50,
       date_prefixed_filenames: false,
       prune_on_sync: true,
+      sync_favourites: false,
     });
   });
 
@@ -205,6 +207,7 @@ describe('setup wizard form', () => {
       'password',
       'pruneOnSync',
       'serverUrl',
+      'syncFavourites',
       'syncLimit',
       'username',
     ]);
@@ -273,6 +276,7 @@ describe('setup wizard form', () => {
       sync_limit: 50,
       date_prefixed_filenames: false,
       prune_on_sync: true,
+      sync_favourites: false,
     });
   });
 
@@ -576,6 +580,7 @@ const SYNC_CONFIG: WallabagConfig = {
   password: 'pässwörd',
   sync_limit: 50,
   prune_on_sync: true,
+  sync_favourites: false,
 };
 
 interface ListingEntry {
@@ -811,6 +816,39 @@ describe('setup wizard prune on sync', () => {
   });
 });
 
+describe('setup wizard sync favourites', () => {
+  it('renders a sync favourites checkbox, unchecked by default', () => {
+    const container = document.createElement('div');
+
+    renderForm(container, makeApi());
+
+    const input = container.querySelector<HTMLInputElement>(
+      'input[name="syncFavourites"]',
+    );
+
+    expect(input, 'missing sync favourites checkbox').not.toBeNull();
+    expect(input?.type).toBe('checkbox');
+    expect(input?.checked).toBe(false);
+  });
+
+  it('maps the checkbox to sync_favourites in config.json', () => {
+    const flagFor = (syncFavourites: string): boolean | undefined =>
+      buildConfig({ ...formValues, syncFavourites }).sync_favourites;
+
+    expect(flagFor('true')).toBe(true);
+    expect(flagFor('false')).toBe(false);
+  });
+
+  it('keeps favourites off when an old saved form value has no checkbox', () => {
+    const legacy: Partial<SetupFormValues> = { ...formValues };
+    delete legacy.syncFavourites;
+
+    const config = buildConfig(legacy as SetupFormValues);
+
+    expect(config.sync_favourites).toBe(false);
+  });
+});
+
 describe('setup wizard prefill', () => {
   const savedConfig: WallabagConfig = {
     ...SYNC_CONFIG,
@@ -952,6 +990,28 @@ describe('setup wizard prefill', () => {
 
     expect(input, 'missing prune checkbox').not.toBeNull();
     expect(input?.checked).toBe(false);
+  });
+
+  it('checks the sync favourites box when the saved config has the flag on', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+    const withFavourites = {
+      ...savedConfig,
+      sync_favourites: true,
+    };
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], config: withFavourites }),
+    );
+
+    renderForm(container, api, fetchImpl);
+
+    await vi.waitFor(() => {
+      expect(inputByName(container, 'serverUrl').value).toBe(
+        savedConfig.server_url,
+      );
+    });
+
+    expect(inputByName(container, 'syncFavourites').checked).toBe(true);
   });
 
   it('checks the date prefix box when the saved config has the flag on', async () => {

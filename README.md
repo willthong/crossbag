@@ -110,6 +110,8 @@ Before publishing, confirm on hardware:
 - [ ] the EPUB opens and renders in the reader
 - [ ] `Sync` pulls a batch into `/Wallabag` and reports its summary
 - [ ] `Sync` removes the EPUB of an article archived in wallabag
+- [ ] with **Sync favourite articles** on, `Sync` pulls starred articles
+      (including archived ones) and Prune keeps them
 - [ ] `/api/entries/{id}/export.epub` returns an EPUB directly, not a redirect
       (`api.fetchToSd` does not follow redirects)
 
@@ -195,6 +197,12 @@ what is unread upstream. Sync checks each tracked article on its own; any
 failed, non-2xx, or unreadable answer keeps the file, and files crossbag did
 not record are never touched. Turn it off to keep archived downloads.
 
+**Sync favourite articles** (`sync_favourites`, off by default) makes Sync pull
+wallabag **starred** articles in addition to the unread set, including ones you
+have already archived. Unread favourites are pulled once, not twice. Prune and
+the toggle agree: while it is on, an archived favourite is kept; turn it off
+and the next Sync prunes archived favourites along with the rest.
+
 Your `config.json` is stored unencrypted on the SD card, including the client
 secret and your wallabag password. Treat the card as sensitive.
 
@@ -210,15 +218,19 @@ on-reader catalog works without a browser.
 
 ## Pull a batch with Sync
 
-Sync pulls up to `sync_limit` unread articles in one go, newest first. It
-skips articles already on the card, including ones pulled through the
-catalog, and re-downloads an article if its EPUB was deleted. Per-article
-failures do not stop the batch; retryable failures are tried again next sync,
-while articles deleted server-side are recorded as skipped forever.
+Sync pulls up to `sync_limit` unread articles in one go, newest first. With
+**Sync favourite articles** on, it then fills any remaining budget from your
+starred articles, including archived favourites. The two lists are merged by
+article id, so a starred unread article downloads once. Sync skips articles
+already on the card, including ones pulled through the catalog, and
+re-downloads an article if its EPUB was deleted. Per-article failures do not
+stop the batch; retryable failures are tried again next sync, while articles
+deleted server-side are recorded as skipped forever.
 
 Before pulling, Sync prunes: each article crossbag previously downloaded is
 checked against wallabag, and an archived or deleted one has its EPUB and
-sidecar removed from `/Wallabag`. If a check fails or returns anything
+sidecar removed from `/Wallabag`. An archived favourite is kept while
+**Sync favourite articles** is on. If a check fails or returns anything
 unexpected, the file stays. The phase can be turned off in the wizard with
 **Prune archived articles**.
 

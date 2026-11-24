@@ -10,14 +10,17 @@ Two interfaces with a strict split:
 plugin.js   →  setup wizard + Sync (browser on phone/computer)
                - Form: server URL, client ID, client secret, username,
                  password, sync_limit, date_prefixed_filenames,
-                 prune_on_sync; prefilled from config.json when saved
+                 prune_on_sync, sync_favourites; prefilled from config.json
+                 when saved
                - "Test Connection" button → api.relay()
                  (server URL is trimmed and must be a full http(s)://host
                  address; a device relay failure is reported in words)
                - "Save" button → api.writeFile() writes config.json
                - "Sync" button → loads config.json via readFile(), lists
                  /Wallabag, prunes archived/deleted tracked EPUBs via
-                 POST /delete, pages unread articles, dedupes presence-aware,
+                 POST /delete (keeping archived favourites when
+                 sync_favourites is on), pages unread and optionally starred
+                 articles, unions them by id, dedupes presence-aware,
                  downloads via api.fetchToSd(), writes sync-state.json
 
 device.json →  daily on-reader catalog
@@ -42,7 +45,8 @@ Runtime files in the plugin folder on the SD card, not listed in
 `manifest.json → files`:
 
 - `config.json` — credentials, the pre-encoded `auth_body`, `sync_limit`,
-  `date_prefixed_filenames`, and `prune_on_sync` written by the wizard
+  `date_prefixed_filenames`, `prune_on_sync`, and `sync_favourites` written by
+  the wizard
 - `sync-state.json` — Sync's ledger of attempted articles and statuses
 
 ## Wallabag API integration
@@ -54,8 +58,12 @@ Runtime files in the plugin folder on the SD card, not listed in
   `&` or `+` (see ADR 0005)
 - **Browse**:
   `GET /api/entries?archive=0&sort=created&order=desc&page={page}&perPage={limit}`
+- **Favourites**: when `sync_favourites` is on, Sync walks
+  `GET /api/entries?starred=1&sort=created&order=desc&detail=metadata&page={page}&perPage=8`
+  too and unions the two lists by article id
 - **Reconcile**: `GET /api/entries/{id}` per tracked article; prune only on a
-  `404` or a truthy `is_archived`, never on an error or unreadable reply
+  `404`, or on a truthy `is_archived` unless it is also starred while
+  `sync_favourites` is on; never on an error or unreadable reply
 - **Download**: `GET /api/entries/{id}/export.epub`
 - **Delete**: same-origin `POST /delete` with form field `path`, one file at a
   time (see ADR 0003)

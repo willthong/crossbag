@@ -47,8 +47,9 @@ password grant) to list articles and export them as EPUBs.
 _Avoid_: Server, backend.
 
 **Sync**:
-The browser action that pulls a bounded batch of unread wallabag articles as
-EPUBs and records each as pulled. Runs on demand from the `plugin.js` page.
+The browser action that pulls a bounded batch of unread wallabag articles —
+plus favourites when `sync_favourites` is enabled — as EPUBs and records each
+as pulled. Runs on demand from the `plugin.js` page.
 _Avoid_: Bulk pull, refresh, download-all.
 
 **Batch**:
@@ -68,8 +69,8 @@ identity.
 _Avoid_: Meta file, tag file.
 
 **Skip-and-fill**:
-Sync's walk: page through unread newest-first, skipping already-pulled
-articles, until `sync_limit` new articles land or the list ends.
+Sync's walk: page through unread newest-first, then favourites, skipping
+already-pulled articles, until `sync_limit` new articles land or the lists end.
 _Avoid_: Backfill, catch-up (both imply a schedule this feature lacks).
 
 **Favourite**:

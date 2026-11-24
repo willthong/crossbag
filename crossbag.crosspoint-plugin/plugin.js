@@ -30,6 +30,12 @@
       label: "Prune archived articles",
       type: "checkbox",
       value: "true"
+    },
+    {
+      name: "syncFavourites",
+      label: "Sync favourite articles",
+      type: "checkbox",
+      value: "false"
     }
   ];
   function clampSyncLimit(value) {
@@ -91,7 +97,10 @@
       date_prefixed_filenames: values.datePrefixedFilenames === "true",
       // A form rendered before the checkbox existed omits the key; pruning is
       // the intended default, so only an explicit "off" turns it off.
-      prune_on_sync: values.pruneOnSync !== "false"
+      prune_on_sync: values.pruneOnSync !== "false",
+      // Off unless the checkbox was explicitly ticked, which also keeps configs
+      // written before the flag existed on the unread-only mirror.
+      sync_favourites: values.syncFavourites === "true"
     };
   }
   function buildTokenRequest(values) {
@@ -124,7 +133,8 @@
       password: inputs.password.value,
       syncLimit: inputs.syncLimit.value,
       datePrefixedFilenames: inputs.datePrefixedFilenames.checked ? "true" : "false",
-      pruneOnSync: inputs.pruneOnSync.checked ? "true" : "false"
+      pruneOnSync: inputs.pruneOnSync.checked ? "true" : "false",
+      syncFavourites: inputs.syncFavourites.checked ? "true" : "false"
     };
   }
   function describeError(error) {
@@ -622,7 +632,8 @@
       password: config.password,
       syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
       datePrefixedFilenames: config.date_prefixed_filenames === true ? "true" : "false",
-      pruneOnSync: config.prune_on_sync === false ? "false" : "true"
+      pruneOnSync: config.prune_on_sync === false ? "false" : "true",
+      syncFavourites: config.sync_favourites === true ? "true" : "false"
     };
   }
   function syncLimitOf(config) {
@@ -662,9 +673,9 @@
     }
     return token;
   }
-  function buildEntriesUrl(serverUrl, page, perPage = ENTRIES_PER_PAGE) {
+  function buildEntriesUrl(serverUrl, page, filter, perPage = ENTRIES_PER_PAGE) {
     const params = new URLSearchParams({
-      archive: "0",
+      ...filter,
       detail: "metadata",
       sort: "created",
       order: "desc",
@@ -707,6 +718,68 @@
       page: typeof parsed.page === "number" ? parsed.page : 1,
       pages: typeof parsed.pages === "number" ? parsed.pages : 1
     };
+  }
+  async function walkEntries(deps, config, authHeaders, filter, onProgress) {
+    const items = [];
+    const seen = /* @__PURE__ */ new Set();
+    let page = 1;
+    let pageSize = ENTRIES_PER_PAGE;
+    while (true) {
+      const url = buildEntriesUrl(config.server_url, page, filter, pageSize);
+      let response;
+      try {
+        response = await deps.relay("GET", url, authHeaders);
+      } catch (error) {
+        if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
+          pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
+          page = 1;
+          items.length = 0;
+          seen.clear();
+          continue;
+        }
+        return {
+          items,
+          reachedEnd: false,
+          interrupted: true,
+          stopReason: describeRelayFailure(error)
+        };
+      }
+      if (!isOk(response.status)) {
+        return {
+          items,
+          reachedEnd: false,
+          interrupted: true,
+          stopReason: `page ${page}: ` + describeHttpFailure(response.status, response.body)
+        };
+      }
+      const listing = parseEntriesPage(response.body);
+      if (listing === void 0) {
+        return {
+          items,
+          reachedEnd: false,
+          interrupted: true,
+          stopReason: `page ${page}: the entries listing could not be read`
+        };
+      }
+      if (!listing.items.length) {
+        return { items, reachedEnd: true, interrupted: false };
+      }
+      onProgress?.({
+        phase: "reading",
+        page: listing.page,
+        pages: Math.max(1, listing.pages)
+      });
+      for (const article of listing.items) {
+        if (!seen.has(article.id)) {
+          seen.add(article.id);
+          items.push(article);
+        }
+      }
+      if (page >= listing.pages) {
+        return { items, reachedEnd: true, interrupted: false };
+      }
+      page += 1;
+    }
   }
   function parseJsonBody(body) {
     try {
@@ -801,6 +874,9 @@
   function pruneEnabled(config) {
     return config.prune_on_sync !== false;
   }
+  function syncFavouritesEnabled(config) {
+    return config.sync_favourites === true;
+  }
   function trackedFiles(state, files, sidecarIds) {
     const present = new Set(
       files.map((name) => basename(name).toLowerCase())
@@ -865,7 +941,10 @@
     if (!isRecord(parsed) || !("is_archived" in parsed)) {
       return "keep";
     }
-    return parsed.is_archived ? "prune" : "keep";
+    if (!parsed.is_archived) {
+      return "keep";
+    }
+    return syncFavouritesEnabled(config) && parsed.is_starred ? "keep" : "prune";
   }
   async function pruneArticles(deps, config, authHeaders, state, files, sidecarIds, nextState, onProgress) {
     const tracked = trackedFiles(state, files, sidecarIds);
@@ -934,11 +1013,9 @@
     let failed = 0;
     let skipped = 0;
     let pruned;
-    let page = 1;
-    let pageSize = ENTRIES_PER_PAGE;
-    let listingReachedEnd = false;
+    let listingReachedEnd;
     let limitHit = false;
-    let interrupted = false;
+    let interrupted;
     let stopReason;
     const record = (article, filename, status) => {
       nextState.articles[String(article.id)] = { filename, status };
@@ -962,54 +1039,37 @@
       const names = new Set(files.map((name) => basename(name)));
       const candidates = [];
       const candidateIds = /* @__PURE__ */ new Set();
-      while (true) {
-        const url = buildEntriesUrl(config.server_url, page, pageSize);
-        let response;
-        try {
-          response = await deps.relay("GET", url, authHeaders);
-        } catch (error) {
-          if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
-            pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
-            page = 1;
-            candidates.length = 0;
-            candidateIds.clear();
-            continue;
-          }
-          interrupted = true;
-          stopReason = describeRelayFailure(error);
-          break;
-        }
-        if (!isOk(response.status)) {
-          interrupted = true;
-          stopReason = `page ${page}: ` + describeHttpFailure(response.status, response.body);
-          break;
-        }
-        const listing = parseEntriesPage(response.body);
-        if (listing === void 0) {
-          interrupted = true;
-          stopReason = `page ${page}: the entries listing could not be read`;
-          break;
-        }
-        if (!listing.items.length) {
-          listingReachedEnd = true;
-          break;
-        }
-        onProgress?.({
-          phase: "reading",
-          page: listing.page,
-          pages: Math.max(1, listing.pages)
-        });
-        for (const article of listing.items) {
+      const addWalk = (walk) => {
+        for (const article of walk.items) {
           if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
             candidateIds.add(article.id);
             candidates.push(article);
           }
         }
-        if (page >= listing.pages) {
-          listingReachedEnd = true;
-          break;
-        }
-        page += 1;
+      };
+      const unread = await walkEntries(
+        deps,
+        config,
+        authHeaders,
+        { archive: "0" },
+        onProgress
+      );
+      addWalk(unread);
+      listingReachedEnd = unread.reachedEnd;
+      interrupted = unread.interrupted;
+      stopReason = unread.stopReason;
+      if (syncFavouritesEnabled(config) && !interrupted) {
+        const starred = await walkEntries(
+          deps,
+          config,
+          authHeaders,
+          { starred: "1" },
+          onProgress
+        );
+        addWalk(starred);
+        listingReachedEnd = listingReachedEnd && starred.reachedEnd;
+        interrupted = starred.interrupted;
+        stopReason = starred.stopReason;
       }
       for (const [i, article] of candidates.entries()) {
         if (pulled >= limit) {

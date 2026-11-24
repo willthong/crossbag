@@ -3,6 +3,13 @@
 ## 0.1.0
 
 - Initial release: setup wizard, on-reader catalog, and EPUB download.
+- Feature: optional **Sync favourite articles** (`sync_favourites`, off by
+  default). When on, Sync also walks wallabag's starred list and pulls those
+  articles, including starred-but-archived ones, after the unread batch. The
+  two lists are unioned by article id so a starred unread article downloads
+  once, and `sync_limit` still caps the combined batch unread-first. Prune
+  agrees with the toggle: it keeps an archived favourite while the flag is on
+  and prunes it when the flag is off or the article is un-starred.
 - Feature: **Prune** (`prune_on_sync`, on by default). Before pulling, Sync
   now checks each article it previously downloaded and deletes the EPUB and
   sidecar of any that wallabag reports archived or gone, so `/Wallabag`

@@ -10,6 +10,7 @@ const CONFIG: WallabagConfig = {
   password: 'hunter2',
   sync_limit: 50,
   prune_on_sync: true,
+  sync_favourites: false,
 };
 
 function configWithLimit(syncLimit: number): WallabagConfig {
@@ -18,6 +19,10 @@ function configWithLimit(syncLimit: number): WallabagConfig {
 
 function configWithPrefix(datePrefixedFilenames: boolean): WallabagConfig {
   return { ...CONFIG, date_prefixed_filenames: datePrefixedFilenames };
+}
+
+function configWithFavourites(syncFavourites: boolean): WallabagConfig {
+  return { ...CONFIG, sync_favourites: syncFavourites };
 }
 
 /** A wallabag article, with the minimum fields the entries schema requires. */
@@ -96,6 +101,7 @@ interface FetchOutcome {
 
 interface HarnessOptions {
   pages: number[][];
+  starredPages?: number[][];
   files?: string[];
   syncState?: unknown;
   sidecars?: Record<string, string>;
@@ -106,6 +112,9 @@ interface HarnessOptions {
   listError?: Error;
   createdAt?: string;
   pageError?: (
+    page: number,
+  ) => Error | { status: number; body: string } | undefined;
+  starredPageError?: (
     page: number,
   ) => Error | { status: number; body: string } | undefined;
   entryResponse?: (
@@ -150,7 +159,10 @@ function makeHarness(options: HarnessOptions) {
     }
 
     const page = readPageNumber(url);
-    const failure = options.pageError?.(page);
+    const starred = new URL(url).searchParams.get('starred') === '1';
+    const failure = starred
+      ? options.starredPageError?.(page)
+      : options.pageError?.(page);
     if (failure instanceof Error) {
       throw failure;
     }
@@ -158,12 +170,13 @@ function makeHarness(options: HarnessOptions) {
       return failure;
     }
 
-    const ids = options.pages[page - 1] ?? [];
+    const pages = (starred ? options.starredPages : options.pages) ?? [];
+    const ids = pages[page - 1] ?? [];
     return {
       status: 200,
       body: entriesPage(ids, {
         page,
-        pages: options.pages.length,
+        pages: pages.length,
         createdAt: options.createdAt,
       }),
     };
@@ -369,6 +382,98 @@ describe('runSync paging', () => {
     }
 
     expect(urls.map((url) => url.searchParams.get('page'))).toEqual(['1', '2']);
+  });
+});
+
+describe('runSync favourite articles', () => {
+  it('walks the starred listing and downloads its articles when enabled', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      starredPages: [[10, 11]],
+    });
+
+    const result = await runSync(harness.deps, configWithFavourites(true));
+
+    const entryCalls = harness.relay.mock.calls
+      .slice(1)
+      .map((call) => ({ url: new URL(String(call[1])), call }));
+    const starred = entryCalls.filter(
+      ({ url }) => url.searchParams.get('starred') === '1',
+    );
+
+    expect(starred).toHaveLength(1);
+    expect(starred[0]?.url.pathname).toBe('/api/entries');
+    expect(starred[0]?.url.searchParams.get('detail')).toBe('metadata');
+    expect(starred[0]?.url.searchParams.get('sort')).toBe('created');
+    expect(starred[0]?.url.searchParams.get('order')).toBe('desc');
+    expect(starred[0]?.url.searchParams.get('perPage')).toBe('8');
+    expect(starred[0]?.call[2].Authorization).toBe('Bearer test-token');
+
+    expect(harness.fetchCalls.map((call) => call.id)).toEqual([10, 11]);
+    expect(result).toMatchObject({ pulled: 2, reachedEnd: true });
+  });
+
+  it('leaves the starred listing alone when the toggle is off or absent', async () => {
+    for (const config of [configWithFavourites(false), CONFIG]) {
+      const harness = makeHarness({
+        pages: [[1]],
+        starredPages: [[2]],
+      });
+
+      await runSync(harness.deps, config);
+
+      expect(
+        harness.relay.mock.calls.some((call) =>
+          String(call[1]).includes('starred=1'),
+        ),
+      ).toBe(false);
+      expect(harness.fetchCalls.map((call) => call.id)).toEqual([1]);
+    }
+  });
+
+  it('downloads a starred unread article once, not once per walk', async () => {
+    const harness = makeHarness({
+      pages: [[1, 2]],
+      starredPages: [[2, 3]],
+    });
+
+    const result = await runSync(harness.deps, configWithFavourites(true));
+
+    expect(harness.fetchCalls.map((call) => call.id)).toEqual([1, 2, 3]);
+    expect(result).toMatchObject({ pulled: 3, failed: 0, skipped: 0 });
+  });
+
+  it('spends the shared sync_limit unread-first, then favourites', async () => {
+    const harness = makeHarness({
+      pages: [[1, 2]],
+      starredPages: [[2, 3, 4]],
+    });
+
+    const result = await runSync(harness.deps, {
+      ...configWithFavourites(true),
+      sync_limit: 3,
+    });
+
+    expect(harness.fetchCalls.map((call) => call.id)).toEqual([1, 2, 3]);
+    expect(result).toMatchObject({ pulled: 3, limitHit: true });
+    expect(result.reachedEnd).toBe(false);
+  });
+
+  it('re-pulls a pruned favourite when the toggle is later enabled', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      starredPages: [[5]],
+      files: [],
+      syncState: {
+        articles: { '5': { filename: 'Gone.epub', status: 'pulled' } },
+      },
+    });
+
+    const result = await runSync(harness.deps, configWithFavourites(true));
+
+    expect(harness.fetchCalls.map((call) => call.id)).toEqual([5]);
+    expect(result.pruned).toBe(0);
+    expect(result.pulled).toBe(1);
   });
 });
 
@@ -794,6 +899,10 @@ function archivedBody(id: number): string {
   return JSON.stringify({ id, is_archived: 1 });
 }
 
+function starredArchivedBody(id: number): string {
+  return JSON.stringify({ id, is_archived: 1, is_starred: 1 });
+}
+
 function unreadBody(id: number): string {
   return JSON.stringify({ id, is_archived: 0 });
 }
@@ -853,6 +962,63 @@ describe('runSync prune', () => {
     expect(result.pruned).toBe(1);
     expect(harness.deleteCalls).toEqual(['/Wallabag/Deleted upstream.epub']);
     expect(writtenState(harness).articles['7']).toBeUndefined();
+  });
+
+  it('keeps an archived favourite while sync_favourites is on', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Favourite.epub', 'Favourite.epub.meta.json'],
+      syncState: {
+        articles: { '10': { filename: 'Favourite.epub', status: 'pulled' } },
+      },
+      entryResponse: (id) => ({
+        status: 200,
+        body: starredArchivedBody(id),
+      }),
+    });
+
+    const result = await runSync(harness.deps, configWithFavourites(true));
+
+    expect(result.pruned).toBe(0);
+    expect(harness.deleteCalls).toEqual([]);
+    expect(writtenState(harness).articles['10']).toBeDefined();
+  });
+
+  it('prunes an archived favourite when sync_favourites is off', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Favourite.epub'],
+      syncState: {
+        articles: { '10': { filename: 'Favourite.epub', status: 'pulled' } },
+      },
+      entryResponse: (id) => ({
+        status: 200,
+        body: starredArchivedBody(id),
+      }),
+    });
+
+    const result = await runSync(harness.deps, configWithFavourites(false));
+
+    expect(result.pruned).toBe(1);
+    expect(harness.deleteCalls).toEqual(['/Wallabag/Favourite.epub']);
+    expect(writtenState(harness).articles['10']).toBeUndefined();
+  });
+
+  it('prunes an archived unstarred article while sync_favourites is on', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Unstarred.epub'],
+      syncState: {
+        articles: { '11': { filename: 'Unstarred.epub', status: 'pulled' } },
+      },
+      entryResponse: (id) => ({ status: 200, body: archivedBody(id) }),
+    });
+
+    const result = await runSync(harness.deps, configWithFavourites(true));
+
+    expect(result.pruned).toBe(1);
+    expect(harness.deleteCalls).toEqual(['/Wallabag/Unstarred.epub']);
+    expect(writtenState(harness).articles['11']).toBeUndefined();
   });
 
   it('keeps an unread tracked article and its ledger entry', async () => {

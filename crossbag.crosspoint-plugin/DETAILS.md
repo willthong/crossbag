@@ -21,16 +21,20 @@ download entirely from the device.
 
 Sync runs as a button in the browser setup page. It reads the saved
 `config.json`, lists `/Wallabag`, pages through unread articles newest
-first, and downloads up to `sync_limit` new EPUBs (default 50). It skips
-articles already on the card, including catalog pulls recorded in their
-`.meta.json` sidecars, and re-downloads an article whose EPUB was deleted.
+first, and downloads up to `sync_limit` new EPUBs (default 50). With the
+`sync_favourites` flag on, it also walks wallabag's starred list and fills
+any remaining budget with those articles, including archived favourites;
+the two lists are unioned by article id so nothing downloads twice. It
+skips articles already on the card, including catalog pulls recorded in
+their `.meta.json` sidecars, and re-downloads an article whose EPUB was
+deleted.
 
 Before pulling, Sync prunes: it checks each article it previously recorded
 and deletes the EPUB and sidecar when wallabag says the article is archived
-or gone. Only a definite answer deletes; a network error, a server error, or
-an unreadable reply keeps the files, and files crossbag did not create are
-never touched. The `prune_on_sync` config flag (on by default) controls the
-phase.
+or gone. An archived favourite is kept while `sync_favourites` is on. Only a
+definite answer deletes; a network error, a server error, or an unreadable
+reply keeps the files, and files crossbag did not create are never touched.
+The `prune_on_sync` config flag (on by default) controls the phase.
 
 `sync-state.json` records every attempt as pulled, skipped, or failed.
 Skipped articles (deleted server-side) are not retried; failed ones are.

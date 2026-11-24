@@ -211,4 +211,22 @@ describe('wallabag config prune', () => {
     const parsed = WallabagConfigSchema.parse({ ...wizardConfig });
 
     expect(parsed.prune_on_sync).toBe(true);
-  });});
+  });
+});
+
+describe('wallabag config favourites', () => {
+  it('accepts the sync_favourites flag the wizard writes', () => {
+    const parsed = WallabagConfigSchema.parse({
+      ...wizardConfig,
+      sync_favourites: true,
+    });
+
+    expect(parsed.sync_favourites).toBe(true);
+  });
+
+  it('defaults the flag off for configs written before it existed', () => {
+    const parsed = WallabagConfigSchema.parse({ ...wizardConfig });
+
+    expect(parsed.sync_favourites).toBe(false);
+  });
+});
