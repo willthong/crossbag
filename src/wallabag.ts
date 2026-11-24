@@ -68,6 +68,9 @@ export const WallabagConfigSchema = z.object({
   // Optional and off by default, so a config written before the flag existed
   // keeps the unread-only mirror.
   sync_favourites: z.boolean().default(false),
+  // Optional and defaulting to the historical folder, so a config written
+  // before the field existed keeps working. Sync normalizes invalid values.
+  wallabag_dir: z.string().default('/Wallabag'),
 });
 
 export type WallabagTag = z.infer<typeof WallabagTagSchema>;

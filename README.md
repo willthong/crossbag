@@ -106,9 +106,10 @@ Before publishing, confirm on hardware:
 - [ ] **Test Connection** succeeds against your wallabag server
 - [ ] `config.json` is written to `plugins/crossbag/` after **Save**
 - [ ] the catalog lists your unread articles, newest first, 8 per page
-- [ ] downloading one produces an EPUB in `/Wallabag`
+- [ ] downloading one produces an EPUB in the configured article folder
+      (default `/Wallabag`)
 - [ ] the EPUB opens and renders in the reader
-- [ ] `Sync` pulls a batch into `/Wallabag` and reports its summary
+- [ ] `Sync` pulls a batch into the article folder and reports its summary
 - [ ] `Sync` removes the EPUB of an article archived in wallabag
 - [ ] with **Sync favourite articles** on, `Sync` pulls starred articles
       (including archived ones) and Prune keeps them
@@ -184,16 +185,22 @@ the plugin folder on the SD card.
 **Articles per sync** sets `sync_limit` (default 50, range 1–500). Sync always
 reads the saved `config.json`; if it is missing, save your credentials first.
 
+**Article folder** (`wallabag_dir`, default `/Wallabag`) is where Sync and the
+on-reader catalog put EPUBs. It must be an absolute path on the card, such as
+`/Books` or `/Articles`, and the folder must already exist. Changing it
+downloads your articles again into the new folder; the old folder is left
+untouched, so delete it yourself when you no longer need it.
+
 **Date-prefixed filenames** (`date_prefixed_filenames`, off by default) makes
 Sync name each newly-downloaded EPUB `YYMMDD-title.epub`, using the article's
-wallabag added date. A sorted `/Wallabag` then reads oldest-first by date
+wallabag added date. A sorted article folder then reads oldest-first by date
 instead of alphabetically by title. Only Sync honours it: it never renames
 files already on the card, and catalog downloads stay `{title}.epub`.
 
 **Prune archived articles** (`prune_on_sync`, on by default) makes Sync delete
 the EPUB and sidecar of every article crossbag previously downloaded once that
-article is archived or deleted in wallabag, so `/Wallabag` keeps mirroring
-what is unread upstream. Sync checks each tracked article on its own; any
+article is archived or deleted in wallabag, so the article folder keeps
+mirroring what is unread upstream. Sync checks each tracked article on its own; any
 failed, non-2xx, or unreadable answer keeps the file, and files crossbag did
 not record are never touched. Turn it off to keep archived downloads.
 
@@ -213,8 +220,8 @@ Exit **File Transfer** and open **Home → Plugins → Crossbag**.
 ## Use on the device
 
 Open the Crossbag catalog on the reader to browse your unread articles,
-newest first. Pick one to download it to `/Wallabag` as `{title}.epub`. The
-on-reader catalog works without a browser.
+newest first. Pick one to download it to your article folder (default
+`/Wallabag`) as `{title}.epub`. The on-reader catalog works without a browser.
 
 ## Pull a batch with Sync
 
@@ -229,7 +236,7 @@ deleted server-side are recorded as skipped forever.
 
 Before pulling, Sync prunes: each article crossbag previously downloaded is
 checked against wallabag, and an archived or deleted one has its EPUB and
-sidecar removed from `/Wallabag`. An archived favourite is kept while
+sidecar removed from the article folder. An archived favourite is kept while
 **Sync favourite articles** is on. If a check fails or returns anything
 unexpected, the file stays. The phase can be turned off in the wizard with
 **Prune archived articles**.

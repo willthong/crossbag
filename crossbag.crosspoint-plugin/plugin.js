@@ -1,23 +1,25 @@
 "use strict";
 (() => {
   // src/plugin.ts
-  var PLUGIN_NAME = "crossbag";
-  var SYNC_LIMIT_DEFAULT = 50;
-  var SYNC_LIMIT_MIN = 1;
-  var SYNC_LIMIT_MAX = 500;
-  var FIELDS = [
+  var PLUGIN_NAME = "crossbag", SYNC_LIMIT_DEFAULT = 50, SYNC_LIMIT_MIN = 1, SYNC_LIMIT_MAX = 500, DEFAULT_WALLABAG_DIR = "/Wallabag", FIELDS = [
     { name: "serverUrl", label: "Server URL", type: "text", value: "https://" },
     { name: "clientId", label: "Client ID", type: "text", value: "" },
     { name: "clientSecret", label: "Client Secret", type: "password", value: "" },
     { name: "username", label: "Username", type: "text", value: "" },
     { name: "password", label: "Password", type: "password", value: "" },
     {
+      name: "wallabagDir",
+      label: "Article folder",
+      type: "text",
+      value: DEFAULT_WALLABAG_DIR
+    },
+    {
       name: "syncLimit",
       label: "Articles per sync",
       type: "number",
-      value: String(SYNC_LIMIT_DEFAULT),
-      min: String(SYNC_LIMIT_MIN),
-      max: String(SYNC_LIMIT_MAX)
+      value: String(50),
+      min: String(1),
+      max: String(500)
     },
     {
       name: "datePrefixedFilenames",
@@ -39,48 +41,52 @@
     }
   ];
   function clampSyncLimit(value) {
-    const whole = Math.trunc(value);
-    return Math.min(SYNC_LIMIT_MAX, Math.max(SYNC_LIMIT_MIN, whole));
+    let whole = Math.trunc(value);
+    return Math.min(500, Math.max(1, whole));
   }
   function parseSyncLimit(raw) {
-    const trimmed = raw.trim();
-    if (trimmed === "") {
-      return SYNC_LIMIT_DEFAULT;
+    let trimmed = raw.trim();
+    if (trimmed === "")
+      return 50;
+    let parsed = Number(trimmed);
+    return Number.isInteger(parsed) ? clampSyncLimit(parsed) : 50;
+  }
+  function normalizeWallabagDir(raw) {
+    if (typeof raw != "string")
+      return DEFAULT_WALLABAG_DIR;
+    let trimmed = raw.trim();
+    if (trimmed === "" || !trimmed.startsWith("/"))
+      return DEFAULT_WALLABAG_DIR;
+    for (let char of trimmed) {
+      let code = char.codePointAt(0) ?? 0;
+      if (code < 32 || code === 127)
+        return DEFAULT_WALLABAG_DIR;
     }
-    const parsed = Number(trimmed);
-    if (!Number.isInteger(parsed)) {
-      return SYNC_LIMIT_DEFAULT;
-    }
-    return clampSyncLimit(parsed);
+    let collapsed = trimmed.replace(/\/+$/, "").replace(/\/{2,}/g, "/");
+    return collapsed === "" || collapsed === "/" || collapsed.split("/").some((segment) => segment === "." || segment === "..") ? DEFAULT_WALLABAG_DIR : collapsed;
   }
   function normalizeServerUrl(serverUrl) {
     return serverUrl.trim().replace(/\/+$/, "");
   }
   function serverUrlProblem(serverUrl) {
-    const url = normalizeServerUrl(serverUrl);
-    if (url === "") {
+    let url = normalizeServerUrl(serverUrl);
+    if (url === "")
       return "Enter the server URL.";
-    }
     let parsed;
     try {
       parsed = new URL(url);
     } catch {
       return "The server URL must be a full address, like https://wallabag.example.com.";
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
       return "The server URL must start with http:// or https://.";
-    }
-    if (parsed.hostname === "") {
+    if (parsed.hostname === "")
       return "The server URL needs a host name, like https://wallabag.example.com.";
-    }
-    return void 0;
   }
   function encodeBase64Utf8(text) {
-    const bytes = new TextEncoder().encode(text);
-    let binary = "";
-    for (const byte of bytes) {
+    let bytes = new TextEncoder().encode(text), binary = "";
+    for (let byte of bytes)
       binary += String.fromCharCode(byte);
-    }
     return btoa(binary);
   }
   function buildConfig(values) {
@@ -94,6 +100,7 @@
       // wizard stores the finished, encoded body for it to send verbatim.
       auth_body: buildTokenRequest(values).body,
       sync_limit: parseSyncLimit(values.syncLimit),
+      wallabag_dir: normalizeWallabagDir(values.wallabagDir),
       date_prefixed_filenames: values.datePrefixedFilenames === "true",
       // A form rendered before the checkbox existed omits the key; pruning is
       // the intended default, so only an explicit "off" turns it off.
@@ -104,7 +111,7 @@
     };
   }
   function buildTokenRequest(values) {
-    const body = new URLSearchParams({
+    let body = new URLSearchParams({
       grant_type: "password",
       client_id: values.clientId,
       client_secret: values.clientSecret,
@@ -131,6 +138,7 @@
       clientSecret: inputs.clientSecret.value,
       username: inputs.username.value,
       password: inputs.password.value,
+      wallabagDir: inputs.wallabagDir.value,
       syncLimit: inputs.syncLimit.value,
       datePrefixedFilenames: inputs.datePrefixedFilenames.checked ? "true" : "false",
       pruneOnSync: inputs.pruneOnSync.checked ? "true" : "false",
@@ -141,41 +149,31 @@
     return error instanceof Error ? error.message : String(error);
   }
   function describeRelayFailure(error) {
-    const message = describeError(error);
-    if (!message.includes("/api/relay")) {
-      return message;
-    }
-    if (message.includes("large bodies")) {
-      return `the reply was too large for the device relay \u2014 the server may be ignoring the metadata request (the device said: ${message})`;
-    }
-    return `the device could not reach the server \u2014 check the server URL and that the reader is online (the device said: ${message})`;
+    let message = describeError(error);
+    return message.includes("/api/relay") ? message.includes("large bodies") ? `the reply was too large for the device relay \u2014 the server may be ignoring the metadata request (the device said: ${message})` : `the device could not reach the server \u2014 check the server URL and that the reader is online (the device said: ${message})` : message;
   }
   function isOk(status) {
     return status >= 200 && status < 300;
   }
   function parseAccessToken(body) {
     try {
-      const parsed = JSON.parse(body);
-      if (typeof parsed !== "object" || parsed === null) {
-        return void 0;
-      }
-      const token = parsed.access_token;
-      return typeof token === "string" && token !== "" ? token : void 0;
+      let parsed = JSON.parse(body);
+      if (typeof parsed != "object" || parsed === null)
+        return;
+      let token = parsed.access_token;
+      return typeof token == "string" && token !== "" ? token : void 0;
     } catch {
-      return void 0;
+      return;
     }
   }
   function describeHttpFailure(status, body) {
-    const parsed = parseJsonBody(body);
+    let parsed = parseJsonBody(body);
     if (isRecord(parsed)) {
-      const code = typeof parsed.error === "string" ? parsed.error : void 0;
-      const description = typeof parsed.error_description === "string" ? parsed.error_description : void 0;
-      if (code !== void 0 && description !== void 0 && description !== "") {
+      let code = typeof parsed.error == "string" ? parsed.error : void 0, description = typeof parsed.error_description == "string" ? parsed.error_description : void 0;
+      if (code !== void 0 && description !== void 0 && description !== "")
         return `${code}: ${description} (HTTP ${status})`;
-      }
-      if (code !== void 0 && code !== "") {
+      if (code !== void 0 && code !== "")
         return `${code} (HTTP ${status})`;
-      }
     }
     return `HTTP ${status}`;
   }
@@ -186,15 +184,14 @@
     status.textContent = message;
   }
   async function testConnection(inputs, api, alert) {
-    const values = readValues(inputs);
-    const problem = serverUrlProblem(values.serverUrl);
+    let values = readValues(inputs), problem = serverUrlProblem(values.serverUrl);
     if (problem !== void 0) {
       setAlert(alert, problem);
       return;
     }
-    const tokenRequest = buildTokenRequest(values);
+    let tokenRequest = buildTokenRequest(values);
     try {
-      const tokenResponse = await api.relay(
+      let tokenResponse = await api.relay(
         tokenRequest.method,
         tokenRequest.url,
         { "Content-Type": "application/x-www-form-urlencoded" },
@@ -210,13 +207,12 @@
         );
         return;
       }
-      const token = parseAccessToken(tokenResponse.body);
+      let token = parseAccessToken(tokenResponse.body);
       if (token === void 0) {
         setAlert(alert, "Connection failed: no access token in the response.");
         return;
       }
-      const request = buildTestRequest(values.serverUrl, token);
-      const response = await api.relay(
+      let request = buildTestRequest(values.serverUrl, token), response = await api.relay(
         request.method,
         request.url,
         request.headers
@@ -237,17 +233,14 @@
     }
   }
   async function saveConfig(inputs, api, alert) {
-    const values = readValues(inputs);
-    const problem = serverUrlProblem(values.serverUrl);
+    let values = readValues(inputs), problem = serverUrlProblem(values.serverUrl);
     if (problem !== void 0) {
       setAlert(alert, problem);
       return;
     }
-    const config = buildConfig(values);
-    const payload = encodeBase64Utf8(JSON.stringify(config));
+    let config = buildConfig(values), payload = encodeBase64Utf8(JSON.stringify(config));
     try {
-      await api.writeFile(pluginFilePath(api.dir, CONFIG_PATH), payload);
-      setAlert(
+      await api.writeFile(pluginFilePath(api.dir, CONFIG_PATH), payload), setAlert(
         alert,
         "Credentials saved. Switch to your device to browse articles."
       );
@@ -282,346 +275,225 @@
 }
 `;
   function ensureButtonStyles(container) {
-    if (container.querySelector("style[data-cbag-styles]") !== null) {
+    if (container.querySelector("style[data-cbag-styles]") !== null)
       return;
-    }
-    const style = document.createElement("style");
-    style.setAttribute("data-cbag-styles", "");
-    style.textContent = BUTTON_STYLES;
-    container.append(style);
+    let style = document.createElement("style");
+    style.setAttribute("data-cbag-styles", ""), style.textContent = BUTTON_STYLES, container.append(style);
   }
   function addButton(parent, label, variant, onClick) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `cbag-btn cbag-btn-${variant}`;
-    button.textContent = label;
-    button.addEventListener("click", onClick);
-    parent.append(button);
-    return button;
+    let button = document.createElement("button");
+    return button.type = "button", button.className = `cbag-btn cbag-btn-${variant}`, button.textContent = label, button.addEventListener("click", onClick), parent.append(button), button;
   }
   function asSyncApi(api) {
-    const candidate = api;
-    return typeof candidate.fetchToSd === "function" ? api : void 0;
+    return typeof api.fetchToSd == "function" ? api : void 0;
   }
   function summarize(result, lastLine) {
     let summary = `${result.pulled} pulled \xB7 ${result.failed} failed (retries next sync) \xB7 ${result.skipped} skipped (deleted server-side)`;
-    if (result.pruned !== void 0) {
-      summary += ` \xB7 ${result.pruned} pruned`;
-    }
-    if (result.limitHit) {
-      summary += " \u2014 more unread articles remain.";
-    }
-    if (result.interrupted) {
-      summary += " \u2014 the sync did not reach the end of the list.";
-      if (result.stopReason !== void 0) {
-        summary += ` Reason: ${result.stopReason}`;
-      }
-      if (lastLine !== void 0) {
-        summary = `${lastLine} \u2014 ${summary}`;
-      }
-    }
-    return summary;
+    return result.pruned !== void 0 && (summary += ` \xB7 ${result.pruned} pruned`), result.limitHit && (summary += " \u2014 more unread articles remain."), result.interrupted && (summary += " \u2014 the sync did not reach the end of the list.", result.stopReason !== void 0 && (summary += ` Reason: ${result.stopReason}`), lastLine !== void 0 && (summary = `${lastLine} \u2014 ${summary}`)), summary;
   }
   async function syncArticles(api, status, fetchImpl, button) {
-    if (button.disabled) {
+    if (button.disabled)
       return;
-    }
-    const syncApi = asSyncApi(api);
+    let syncApi = asSyncApi(api);
     if (syncApi === void 0) {
       setStatus(status, "Sync is unavailable: the device API has no file download.");
       return;
     }
-    button.disabled = true;
-    setStatus(status, "Syncing\u2026");
+    button.disabled = !0, setStatus(status, "Syncing\u2026");
     let lastStatusLine;
     try {
-      const deps = buildSyncDeps(syncApi, fetchImpl);
-      const config = await loadSavedConfig(deps);
-      const result = await runSync(deps, config, (p) => {
-        if (p.phase === "reading") {
-          lastStatusLine = `Reading unread list: page ${p.page}/${p.pages}`;
-        } else if (p.phase === "pruning") {
-          lastStatusLine = `Pruning ${p.index}/${p.total}`;
-        } else {
-          lastStatusLine = `Downloading ${p.index}/${p.total}${p.title ? `: ${p.title}` : ""}`;
-        }
-        setStatus(status, lastStatusLine);
+      let deps = buildSyncDeps(syncApi, fetchImpl), config = await loadSavedConfig(deps), result = await runSync(deps, config, (p) => {
+        p.phase === "reading" ? lastStatusLine = `Reading unread list: page ${p.page}/${p.pages}` : p.phase === "pruning" ? lastStatusLine = `Pruning ${p.index}/${p.total}` : lastStatusLine = `Downloading ${p.index}/${p.total}${p.title ? `: ${p.title}` : ""}`, setStatus(status, lastStatusLine);
       });
       setStatus(status, summarize(result, lastStatusLine));
     } catch (error) {
-      const why = describeError(error);
+      let why = describeError(error);
       setStatus(status, `${lastStatusLine ? `${lastStatusLine} \u2014 ` : ""}${why}`);
     } finally {
-      button.disabled = false;
+      button.disabled = !1;
     }
   }
   function applyPrefill(inputs, values) {
-    for (const field of FIELDS) {
-      const input = inputs[field.name];
+    for (let field of FIELDS) {
+      let input = inputs[field.name];
       if (field.type === "checkbox") {
-        if (input.checked === (field.value === "true")) {
-          input.checked = values[field.name] === "true";
-        }
+        input.checked === (field.value === "true") && (input.checked = values[field.name] === "true");
         continue;
       }
-      if (input.value === field.value) {
-        input.value = values[field.name];
-      }
+      input.value === field.value && (input.value = values[field.name]);
     }
   }
   async function loadPrefillValues(api, fetchImpl) {
-    if (api.dir === void 0 || api.dir === "") {
-      return void 0;
-    }
-    if (asSyncApi(api) === void 0 && fetchImpl === globalThis.fetch) {
-      return void 0;
-    }
-    try {
-      const deps = buildSyncDeps(api, fetchImpl);
-      return configValues(await loadSavedConfig(deps));
-    } catch {
-      return void 0;
-    }
+    if (!(api.dir === void 0 || api.dir === "") && !(asSyncApi(api) === void 0 && fetchImpl === globalThis.fetch))
+      try {
+        let deps = buildSyncDeps(api, fetchImpl);
+        return configValues(await loadSavedConfig(deps));
+      } catch {
+        return;
+      }
   }
   function renderForm(container, api, fetchImpl = globalThis.fetch) {
-    const form = document.createElement("form");
-    const inputs = {};
-    for (const field of FIELDS) {
-      const label = document.createElement("label");
+    let form = document.createElement("form"), inputs = {};
+    for (let field of FIELDS) {
+      let label = document.createElement("label");
       label.textContent = field.label;
-      const input = document.createElement("input");
-      input.type = field.type;
-      input.name = field.name;
-      if (field.type === "checkbox") {
-        input.checked = field.value === "true";
-      } else {
-        input.value = field.value;
-      }
-      if (field.min !== void 0) {
-        input.min = field.min;
-      }
-      if (field.max !== void 0) {
-        input.max = field.max;
-      }
-      label.append(input);
-      form.append(label);
-      inputs[field.name] = input;
+      let input = document.createElement("input");
+      input.type = field.type, input.name = field.name, field.type === "checkbox" ? input.checked = field.value === "true" : input.value = field.value, field.min !== void 0 && (input.min = field.min), field.max !== void 0 && (input.max = field.max), label.append(input), form.append(label), inputs[field.name] = input;
     }
-    void loadPrefillValues(api, fetchImpl).then((values) => {
-      if (values !== void 0) {
-        applyPrefill(inputs, values);
-      }
+    loadPrefillValues(api, fetchImpl).then((values) => {
+      values !== void 0 && applyPrefill(inputs, values);
     });
-    const alert = document.createElement("p");
+    let alert = document.createElement("p");
     alert.setAttribute("role", "alert");
-    const status = document.createElement("p");
+    let status = document.createElement("p");
     status.setAttribute("data-sync-status", "");
-    const actions = document.createElement("div");
-    actions.className = "cbag-actions";
-    addButton(actions, "Test Connection", "secondary", () => {
-      void testConnection(inputs, api, alert);
+    let actions = document.createElement("div");
+    actions.className = "cbag-actions", addButton(actions, "Test Connection", "secondary", () => {
+      testConnection(inputs, api, alert);
+    }), addButton(actions, "Save", "primary", () => {
+      saveConfig(inputs, api, alert);
     });
-    addButton(actions, "Save", "primary", () => {
-      void saveConfig(inputs, api, alert);
+    let syncButton = addButton(actions, "Sync", "accent", () => {
+      syncArticles(api, status, fetchImpl, syncButton);
     });
-    const syncButton = addButton(actions, "Sync", "accent", () => {
-      void syncArticles(api, status, fetchImpl, syncButton);
-    });
-    form.append(actions);
-    form.append(status);
-    form.append(alert);
-    ensureButtonStyles(container);
-    container.append(form);
+    form.append(actions), form.append(status), form.append(alert), ensureButtonStyles(container), container.append(form);
   }
   var ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|\u0000-\u001f\u007f]/g;
   function sanitizeFilenamePart(raw) {
-    const cleaned = raw.replace(ILLEGAL_FILENAME_CHARS, " ").replace(/\s+/g, " ").replace(/^[.\s]+|[.\s]+$/g, "");
+    let cleaned = raw.replace(ILLEGAL_FILENAME_CHARS, " ").replace(/\s+/g, " ").replace(/^[.\s]+|[.\s]+$/g, "");
     return cleaned.length > 0 ? cleaned : "untitled";
   }
   function basename(path) {
-    const parts = path.split("/");
+    let parts = path.split("/");
     return parts[parts.length - 1] ?? path;
   }
   function chooseFilename(title, id, existing, datePrefix) {
-    const sanitized = sanitizeFilenamePart(title);
-    const base = datePrefix ? `${datePrefix}-${sanitized}` : sanitized;
-    const taken = new Set([...existing].map((name) => name.toLowerCase()));
-    const isTaken = (candidate) => taken.has(candidate.toLowerCase());
-    const preferred = `${base}.epub`;
-    if (!isTaken(preferred)) {
+    let sanitized = sanitizeFilenamePart(title), base = datePrefix ? `${datePrefix}-${sanitized}` : sanitized, taken = new Set([...existing].map((name) => name.toLowerCase())), isTaken = (candidate) => taken.has(candidate.toLowerCase()), preferred = `${base}.epub`;
+    if (!isTaken(preferred))
       return preferred;
-    }
-    const qualified = `${base}-${id}.epub`;
-    if (!isTaken(qualified)) {
+    let qualified = `${base}-${id}.epub`;
+    if (!isTaken(qualified))
       return qualified;
-    }
     for (let suffix = 2; ; suffix += 1) {
-      const candidate = `${base}-${id}-${suffix}.epub`;
-      if (!isTaken(candidate)) {
+      let candidate = `${base}-${id}-${suffix}.epub`;
+      if (!isTaken(candidate))
         return candidate;
-      }
     }
   }
   var SYNC_STATUS_VALUES = ["pulled", "skipped", "failed"];
   function isSyncStatus(value) {
-    return typeof value === "string" && SYNC_STATUS_VALUES.includes(value);
+    return typeof value == "string" && SYNC_STATUS_VALUES.includes(value);
   }
   function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
+    return typeof value == "object" && value !== null && !Array.isArray(value);
   }
   function readSyncStateArticle(value) {
-    if (!isRecord(value) || typeof value.filename !== "string") {
-      return void 0;
-    }
-    const status = value.status === void 0 ? "pulled" : value.status;
-    if (!isSyncStatus(status)) {
-      return void 0;
-    }
-    return { filename: value.filename, status };
+    if (!isRecord(value) || typeof value.filename != "string")
+      return;
+    let status = value.status === void 0 ? "pulled" : value.status;
+    if (isSyncStatus(status))
+      return { filename: value.filename, status };
   }
   function readSyncState(raw) {
-    const empty = { articles: {} };
-    if (!isRecord(raw) || !isRecord(raw.articles)) {
+    let empty = { articles: {} };
+    if (!isRecord(raw) || !isRecord(raw.articles))
       return empty;
-    }
-    const articles = {};
-    for (const [id, value] of Object.entries(raw.articles)) {
-      if (!/^\d+$/.test(id)) {
+    let articles = {};
+    for (let [id, value] of Object.entries(raw.articles)) {
+      if (!/^\d+$/.test(id))
         continue;
-      }
-      const article = readSyncStateArticle(value);
-      if (article !== void 0) {
-        articles[id] = article;
-      }
+      let article = readSyncStateArticle(value);
+      article !== void 0 && (articles[id] = article);
     }
     return { articles };
   }
-  var EPUB_SUFFIX = ".epub";
-  var SIDECAR_SUFFIX = ".meta.json";
+  var EPUB_SUFFIX = ".epub", SIDECAR_SUFFIX = ".meta.json";
   function sidecarEpub(name) {
-    const lower = name.toLowerCase();
-    if (!lower.endsWith(SIDECAR_SUFFIX)) {
-      return void 0;
-    }
-    const epub = name.slice(0, -SIDECAR_SUFFIX.length);
+    let lower = name.toLowerCase();
+    if (!lower.endsWith(SIDECAR_SUFFIX))
+      return;
+    let epub = name.slice(0, -SIDECAR_SUFFIX.length);
     return lower.slice(0, -SIDECAR_SUFFIX.length).endsWith(EPUB_SUFFIX) ? epub : void 0;
   }
   function computePulledIds(state, files, sidecarIds) {
-    const present = new Set(
+    let present = new Set(
       files.map((name) => basename(name).toLowerCase())
-    );
-    const pulled = /* @__PURE__ */ new Set();
-    for (const [id, entry] of Object.entries(state.articles)) {
-      const articleId = Number(id);
-      if (!Number.isInteger(articleId)) {
+    ), pulled = /* @__PURE__ */ new Set();
+    for (let [id, entry] of Object.entries(state.articles)) {
+      let articleId = Number(id);
+      if (!Number.isInteger(articleId) || entry.status === "failed")
         continue;
-      }
-      if (entry.status === "failed") {
-        continue;
-      }
       if (entry.status === "skipped") {
         pulled.add(articleId);
         continue;
       }
-      const saved = basename(entry.filename);
-      if (saved.toLowerCase().endsWith(EPUB_SUFFIX) && present.has(saved.toLowerCase())) {
-        pulled.add(articleId);
-      }
+      let saved = basename(entry.filename);
+      saved.toLowerCase().endsWith(EPUB_SUFFIX) && present.has(saved.toLowerCase()) && pulled.add(articleId);
     }
-    for (const [name, id] of Object.entries(sidecarIds)) {
-      const epub = sidecarEpub(basename(name));
-      if (epub !== void 0 && present.has(epub.toLowerCase())) {
-        pulled.add(id);
-      }
+    for (let [name, id] of Object.entries(sidecarIds)) {
+      let epub = sidecarEpub(basename(name));
+      epub !== void 0 && present.has(epub.toLowerCase()) && pulled.add(id);
     }
     return pulled;
   }
   function fileNamesFromListing(payload) {
-    if (!Array.isArray(payload)) {
+    if (!Array.isArray(payload))
       throw new Error("Invalid /api/files response: expected a list.");
-    }
-    const names = [];
-    for (const entry of payload) {
-      if (typeof entry !== "object" || entry === null) {
+    let names = [];
+    for (let entry of payload) {
+      if (typeof entry != "object" || entry === null)
         throw new Error("Invalid /api/files response: expected file objects.");
-      }
-      const { name, isDirectory } = entry;
-      if (typeof name !== "string") {
+      let { name, isDirectory } = entry;
+      if (typeof name != "string")
         throw new Error("Invalid /api/files response: file has no name.");
-      }
-      if (isDirectory !== true) {
-        names.push(name);
-      }
+      isDirectory !== !0 && names.push(name);
     }
     return names;
   }
   function pluginFilePath(pluginDir, name) {
-    if (name.startsWith("/")) {
+    if (name.startsWith("/"))
       return name;
-    }
-    if (pluginDir === void 0 || pluginDir === "") {
+    if (pluginDir === void 0 || pluginDir === "")
       throw new Error(
         "The device API did not provide a plugin directory (api.dir); update the firmware to 2.0.0rc or newer."
       );
-    }
     return `${pluginDir}/${name}`;
   }
   function buildSyncDeps(api, fetchImpl) {
     return {
-      relay: async (method, url, headers, body) => {
-        return await api.relay(method, url, headers, body);
-      },
+      relay: async (method, url, headers, body) => await api.relay(method, url, headers, body),
       fetchToSd: async (url, dest, headers) => {
-        if (typeof api.fetchToSd !== "function") {
+        if (typeof api.fetchToSd != "function")
           throw new Error(
             "Sync is unavailable: the device API has no file download."
           );
-        }
         return await api.fetchToSd(url, dest, headers);
       },
-      writeFile: async (path, dataB64) => {
-        await api.writeFile(pluginFilePath(api.dir, path), dataB64);
-        return { ok: true };
-      },
+      writeFile: async (path, dataB64) => (await api.writeFile(pluginFilePath(api.dir, path), dataB64), { ok: !0 }),
       listFiles: async (path) => {
-        const url = `/api/files?path=${encodeURIComponent(path)}`;
-        const response = await fetchImpl(url);
-        if (!response.ok) {
+        let url = `/api/files?path=${encodeURIComponent(path)}`, response = await fetchImpl(url);
+        if (!response.ok)
           throw new Error(`Could not list ${path} (HTTP ${response.status}).`);
-        }
         return fileNamesFromListing(await response.json());
       },
       readFile: async (path) => {
-        const url = `/download?path=${encodeURIComponent(pluginFilePath(api.dir, path))}`;
-        const response = await fetchImpl(url);
-        if (!response.ok) {
+        let url = `/download?path=${encodeURIComponent(pluginFilePath(api.dir, path))}`, response = await fetchImpl(url);
+        if (!response.ok)
           throw new Error(`Could not read ${path} (HTTP ${response.status}).`);
-        }
         return await response.text();
       },
-      deleteFile: async (path) => {
-        const response = await fetchImpl("/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ path }).toString()
-        });
-        return { status: response.status };
-      }
+      deleteFile: async (path) => ({ status: (await fetchImpl("/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ path }).toString()
+      })).status })
     };
   }
-  var WALLABAG_DIR = "/Wallabag";
-  var SYNC_STATE_PATH = "sync-state.json";
-  var CONFIG_PATH = "config.json";
-  var ENTRIES_PER_PAGE = 8;
-  var MIN_ENTRIES_PER_PAGE = 1;
+  var SYNC_STATE_PATH = "sync-state.json", CONFIG_PATH = "config.json", ENTRIES_PER_PAGE = 8, MIN_ENTRIES_PER_PAGE = 1;
   function formatDatePrefix(createdAt) {
-    const startsWithIsoDateTime = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/.test(
+    return !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/.test(
       createdAt
-    );
-    if (!startsWithIsoDateTime || Number.isNaN(Date.parse(createdAt))) {
-      return "";
-    }
-    return `${createdAt.slice(2, 4)}${createdAt.slice(5, 7)}${createdAt.slice(8, 10)}`;
+    ) || Number.isNaN(Date.parse(createdAt)) ? "" : `${createdAt.slice(2, 4)}${createdAt.slice(5, 7)}${createdAt.slice(8, 10)}`;
   }
   function configValues(config) {
     return {
@@ -630,22 +502,19 @@
       clientSecret: config.client_secret,
       username: config.username,
       password: config.password,
-      syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
-      datePrefixedFilenames: config.date_prefixed_filenames === true ? "true" : "false",
-      pruneOnSync: config.prune_on_sync === false ? "false" : "true",
-      syncFavourites: config.sync_favourites === true ? "true" : "false"
+      wallabagDir: normalizeWallabagDir(config.wallabag_dir),
+      syncLimit: String(config.sync_limit ?? 50),
+      datePrefixedFilenames: config.date_prefixed_filenames === !0 ? "true" : "false",
+      pruneOnSync: config.prune_on_sync === !1 ? "false" : "true",
+      syncFavourites: config.sync_favourites === !0 ? "true" : "false"
     };
   }
   function syncLimitOf(config) {
-    const raw = config.sync_limit;
-    if (raw === void 0 || !Number.isFinite(raw)) {
-      return SYNC_LIMIT_DEFAULT;
-    }
-    return clampSyncLimit(raw);
+    let raw = config.sync_limit;
+    return raw === void 0 || !Number.isFinite(raw) ? 50 : clampSyncLimit(raw);
   }
   async function obtainToken(deps, config) {
-    const request = buildTokenRequest(configValues(config));
-    let response;
+    let request = buildTokenRequest(configValues(config)), response;
     try {
       response = await deps.relay(
         request.method,
@@ -659,22 +528,20 @@
         { cause: error }
       );
     }
-    if (!isOk(response.status)) {
+    if (!isOk(response.status))
       throw new Error(
         `Authentication failed: ${describeHttpFailure(
           response.status,
           response.body
         )}.`
       );
-    }
-    const token = parseAccessToken(response.body);
-    if (token === void 0) {
+    let token = parseAccessToken(response.body);
+    if (token === void 0)
       throw new Error("Authentication failed: no access token in the response.");
-    }
     return token;
   }
   function buildEntriesUrl(serverUrl, page, filter, perPage = ENTRIES_PER_PAGE) {
-    const params = new URLSearchParams({
+    let params = new URLSearchParams({
       ...filter,
       detail: "metadata",
       sort: "created",
@@ -689,95 +556,76 @@
     try {
       parsed = JSON.parse(body);
     } catch {
-      return void 0;
+      return;
     }
-    if (!isRecord(parsed) || !isRecord(parsed._embedded)) {
-      return void 0;
-    }
-    const rawItems = parsed._embedded.items;
-    if (!Array.isArray(rawItems)) {
-      return void 0;
-    }
-    const items = [];
-    for (const item of rawItems) {
-      if (!isRecord(item)) {
-        return void 0;
-      }
-      const { id, title, created_at } = item;
-      if (typeof id !== "number" || !Number.isInteger(id)) {
-        return void 0;
-      }
+    if (!isRecord(parsed) || !isRecord(parsed._embedded))
+      return;
+    let rawItems = parsed._embedded.items;
+    if (!Array.isArray(rawItems))
+      return;
+    let items = [];
+    for (let item of rawItems) {
+      if (!isRecord(item))
+        return;
+      let { id, title, created_at } = item;
+      if (typeof id != "number" || !Number.isInteger(id))
+        return;
       items.push({
         id,
-        title: typeof title === "string" ? title : "",
-        created_at: typeof created_at === "string" ? created_at : ""
+        title: typeof title == "string" ? title : "",
+        created_at: typeof created_at == "string" ? created_at : ""
       });
     }
     return {
       items,
-      page: typeof parsed.page === "number" ? parsed.page : 1,
-      pages: typeof parsed.pages === "number" ? parsed.pages : 1
+      page: typeof parsed.page == "number" ? parsed.page : 1,
+      pages: typeof parsed.pages == "number" ? parsed.pages : 1
     };
   }
   async function walkEntries(deps, config, authHeaders, filter, onProgress) {
-    const items = [];
-    const seen = /* @__PURE__ */ new Set();
-    let page = 1;
-    let pageSize = ENTRIES_PER_PAGE;
-    while (true) {
-      const url = buildEntriesUrl(config.server_url, page, filter, pageSize);
-      let response;
+    let items = [], seen = /* @__PURE__ */ new Set(), page = 1, pageSize = ENTRIES_PER_PAGE;
+    for (; ; ) {
+      let url = buildEntriesUrl(config.server_url, page, filter, pageSize), response;
       try {
         response = await deps.relay("GET", url, authHeaders);
       } catch (error) {
         if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
-          pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
-          page = 1;
-          items.length = 0;
-          seen.clear();
+          pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2)), page = 1, items.length = 0, seen.clear();
           continue;
         }
         return {
           items,
-          reachedEnd: false,
-          interrupted: true,
+          reachedEnd: !1,
+          interrupted: !0,
           stopReason: describeRelayFailure(error)
         };
       }
-      if (!isOk(response.status)) {
+      if (!isOk(response.status))
         return {
           items,
-          reachedEnd: false,
-          interrupted: true,
+          reachedEnd: !1,
+          interrupted: !0,
           stopReason: `page ${page}: ` + describeHttpFailure(response.status, response.body)
         };
-      }
-      const listing = parseEntriesPage(response.body);
-      if (listing === void 0) {
+      let listing = parseEntriesPage(response.body);
+      if (listing === void 0)
         return {
           items,
-          reachedEnd: false,
-          interrupted: true,
+          reachedEnd: !1,
+          interrupted: !0,
           stopReason: `page ${page}: the entries listing could not be read`
         };
-      }
-      if (!listing.items.length) {
-        return { items, reachedEnd: true, interrupted: false };
-      }
+      if (!listing.items.length)
+        return { items, reachedEnd: !0, interrupted: !1 };
       onProgress?.({
         phase: "reading",
         page: listing.page,
         pages: Math.max(1, listing.pages)
       });
-      for (const article of listing.items) {
-        if (!seen.has(article.id)) {
-          seen.add(article.id);
-          items.push(article);
-        }
-      }
-      if (page >= listing.pages) {
-        return { items, reachedEnd: true, interrupted: false };
-      }
+      for (let article of listing.items)
+        seen.has(article.id) || (seen.add(article.id), items.push(article));
+      if (page >= listing.pages)
+        return { items, reachedEnd: !0, interrupted: !1 };
       page += 1;
     }
   }
@@ -788,28 +636,25 @@
       try {
         return JSON.parse(atob(body));
       } catch {
-        return void 0;
+        return;
       }
     }
   }
   function isWallabagConfig(value) {
-    if (!isRecord(value)) {
-      return false;
-    }
-    const textFields = [
+    if (!isRecord(value))
+      return !1;
+    let textFields = [
       "server_url",
       "client_id",
       "client_secret",
       "username",
       "password"
     ];
-    for (const field of textFields) {
-      if (typeof value[field] !== "string") {
-        return false;
-      }
-    }
-    const limit = value.sync_limit;
-    return limit === void 0 || typeof limit === "number";
+    for (let field of textFields)
+      if (typeof value[field] != "string")
+        return !1;
+    let limit = value.sync_limit;
+    return limit !== void 0 && typeof limit != "number" ? !1 : value.wallabag_dir === void 0 || typeof value.wallabag_dir == "string";
   }
   async function loadSavedConfig(deps) {
     let raw;
@@ -821,47 +666,36 @@
         { cause: error }
       );
     }
-    const parsed = parseJsonBody(raw);
-    if (!isWallabagConfig(parsed)) {
+    let parsed = parseJsonBody(raw);
+    if (!isWallabagConfig(parsed))
       throw new Error(
         "Could not read config.json. Save your credentials first."
       );
-    }
     return parsed;
   }
   function parseSidecarId(body) {
-    const parsed = parseJsonBody(body);
-    if (!isRecord(parsed)) {
-      return void 0;
-    }
-    const raw = parsed.book_id;
-    const id = typeof raw === "string" ? Number(raw) : raw;
-    return typeof id === "number" && Number.isInteger(id) ? id : void 0;
+    let parsed = parseJsonBody(body);
+    if (!isRecord(parsed))
+      return;
+    let raw = parsed.book_id, id = typeof raw == "string" ? Number(raw) : raw;
+    return typeof id == "number" && Number.isInteger(id) ? id : void 0;
   }
-  async function readSidecarIds(deps, files) {
-    const names = files.map((name) => basename(name));
-    const present = new Set(names);
-    const sidecars = names.filter((name) => {
-      const epub = sidecarEpub(name);
+  async function readSidecarIds(deps, dir, files) {
+    let names = files.map((name) => basename(name)), present = new Set(names), sidecars = names.filter((name) => {
+      let epub = sidecarEpub(name);
       return epub !== void 0 && present.has(epub);
-    });
-    const reads = await Promise.all(
+    }), reads = await Promise.all(
       sidecars.map(async (name) => {
         try {
-          const raw = await deps.readFile(`${WALLABAG_DIR}/${name}`);
-          const id = parseSidecarId(raw);
+          let raw = await deps.readFile(`${dir}/${name}`), id = parseSidecarId(raw);
           return id === void 0 ? void 0 : [name, id];
         } catch {
-          return void 0;
+          return;
         }
       })
-    );
-    const ids = {};
-    for (const entry of reads) {
-      if (entry !== void 0) {
-        ids[entry[0]] = entry[1];
-      }
-    }
+    ), ids = {};
+    for (let entry of reads)
+      entry !== void 0 && (ids[entry[0]] = entry[1]);
     return ids;
   }
   async function loadSyncState(deps) {
@@ -872,51 +706,36 @@
     }
   }
   function pruneEnabled(config) {
-    return config.prune_on_sync !== false;
+    return config.prune_on_sync !== !1;
   }
   function syncFavouritesEnabled(config) {
-    return config.sync_favourites === true;
+    return config.sync_favourites === !0;
   }
   function trackedFiles(state, files, sidecarIds) {
-    const present = new Set(
+    let present = new Set(
       files.map((name) => basename(name).toLowerCase())
-    );
-    const tracked = /* @__PURE__ */ new Map();
-    const entryFor = (id) => {
-      const existing = tracked.get(id);
-      if (existing !== void 0) {
+    ), tracked = /* @__PURE__ */ new Map(), entryFor = (id) => {
+      let existing = tracked.get(id);
+      if (existing !== void 0)
         return existing;
-      }
-      const created = { epubs: [], sidecars: [] };
-      tracked.set(id, created);
-      return created;
+      let created = { epubs: [], sidecars: [] };
+      return tracked.set(id, created), created;
+    }, add = (list, name) => {
+      present.has(name.toLowerCase()) && !list.includes(name) && list.push(name);
     };
-    const add = (list, name) => {
-      if (present.has(name.toLowerCase()) && !list.includes(name)) {
-        list.push(name);
-      }
-    };
-    for (const [rawId, entry] of Object.entries(state.articles)) {
-      const id = Number(rawId);
-      if (!Number.isInteger(id)) {
+    for (let [rawId, entry] of Object.entries(state.articles)) {
+      let id = Number(rawId);
+      if (!Number.isInteger(id))
         continue;
-      }
-      const recorded = entryFor(id);
-      const name = basename(entry.filename);
-      if (!name.toLowerCase().endsWith(EPUB_SUFFIX)) {
-        continue;
-      }
-      add(recorded.epubs, name);
-      add(recorded.sidecars, `${name}${SIDECAR_SUFFIX}`);
+      let recorded = entryFor(id), name = basename(entry.filename);
+      name.toLowerCase().endsWith(EPUB_SUFFIX) && (add(recorded.epubs, name), add(recorded.sidecars, `${name}${SIDECAR_SUFFIX}`));
     }
-    for (const [rawName, id] of Object.entries(sidecarIds)) {
-      const epub = sidecarEpub(basename(rawName));
-      if (epub === void 0) {
+    for (let [rawName, id] of Object.entries(sidecarIds)) {
+      let epub = sidecarEpub(basename(rawName));
+      if (epub === void 0)
         continue;
-      }
-      const recorded = entryFor(id);
-      add(recorded.sidecars, basename(rawName));
-      add(recorded.epubs, epub);
+      let recorded = entryFor(id);
+      add(recorded.sidecars, basename(rawName)), add(recorded.epubs, epub);
     }
     return tracked;
   }
@@ -931,149 +750,95 @@
     } catch {
       return "keep";
     }
-    if (response.status === 404) {
+    if (response.status === 404)
       return "prune";
-    }
-    if (!isOk(response.status)) {
+    if (!isOk(response.status))
       return "keep";
-    }
-    const parsed = parseJsonBody(response.body);
-    if (!isRecord(parsed) || !("is_archived" in parsed)) {
-      return "keep";
-    }
-    if (!parsed.is_archived) {
-      return "keep";
-    }
-    return syncFavouritesEnabled(config) && parsed.is_starred ? "keep" : "prune";
+    let parsed = parseJsonBody(response.body);
+    return !isRecord(parsed) || !("is_archived" in parsed) || !parsed.is_archived || syncFavouritesEnabled(config) && parsed.is_starred ? "keep" : "prune";
   }
-  async function pruneArticles(deps, config, authHeaders, state, files, sidecarIds, nextState, onProgress) {
-    const tracked = trackedFiles(state, files, sidecarIds);
-    const present = new Map(
+  async function pruneArticles(deps, config, authHeaders, dir, state, files, sidecarIds, nextState, onProgress) {
+    let tracked = trackedFiles(state, files, sidecarIds), present = new Map(
       files.map((name) => [basename(name).toLowerCase(), basename(name)])
-    );
-    let pruned = 0;
-    let index = 0;
-    for (const [id, recorded] of tracked) {
-      index += 1;
-      onProgress?.({ phase: "pruning", index, total: tracked.size });
-      if (await reconcileArticle(deps, config, authHeaders, id) !== "prune") {
+    ), pruned = 0, index = 0;
+    for (let [id, recorded] of tracked) {
+      if (index += 1, onProgress?.({ phase: "pruning", index, total: tracked.size }), await reconcileArticle(deps, config, authHeaders, id) !== "prune")
         continue;
-      }
-      let removedAll = true;
-      for (const name of [...recorded.epubs, ...recorded.sidecars]) {
-        const actual = present.get(name.toLowerCase());
-        if (actual === void 0) {
+      let removedAll = !0;
+      for (let name of [...recorded.epubs, ...recorded.sidecars]) {
+        let actual = present.get(name.toLowerCase());
+        if (actual === void 0)
           continue;
-        }
         let status;
         try {
-          ({ status } = await deps.deleteFile(`${WALLABAG_DIR}/${actual}`));
+          ({ status } = await deps.deleteFile(`${dir}/${actual}`));
         } catch {
           status = 0;
         }
         if (!isOk(status)) {
-          removedAll = false;
+          removedAll = !1;
           continue;
         }
         present.delete(name.toLowerCase());
       }
-      if (!removedAll) {
-        continue;
-      }
-      delete nextState.articles[String(id)];
-      pruned += 1;
+      removedAll && (delete nextState.articles[String(id)], pruned += 1);
     }
     return { pruned, files: [...present.values()] };
   }
   function classifyOutcome(outcome) {
-    if (outcome.status === 404 || outcome.status === 410) {
-      return "skipped";
-    }
-    if (!isOk(outcome.status) || !outcome.complete) {
-      return "failed";
-    }
-    return "pulled";
+    return outcome.status === 404 || outcome.status === 410 ? "skipped" : !isOk(outcome.status) || !outcome.complete ? "failed" : "pulled";
   }
   async function runSync(deps, config, onProgress) {
-    const token = await obtainToken(deps, config);
-    const authHeaders = { Authorization: `Bearer ${token}` };
-    let files;
+    let authHeaders = { Authorization: `Bearer ${await obtainToken(deps, config)}` }, dir = normalizeWallabagDir(config.wallabag_dir), files;
     try {
-      files = await deps.listFiles(WALLABAG_DIR);
+      files = await deps.listFiles(dir);
     } catch (error) {
-      throw new Error(`Could not list ${WALLABAG_DIR}: ${describeError(error)}`, {
-        cause: error
-      });
+      throw new Error(
+        `Could not list ${dir}: ${describeError(error)}. Check that the article folder exists on the SD card.`,
+        { cause: error }
+      );
     }
-    const state = await loadSyncState(deps);
-    const sidecarIds = await readSidecarIds(deps, files);
-    const nextState = { articles: { ...state.articles } };
-    const limit = syncLimitOf(config);
-    let pulled = 0;
-    let failed = 0;
-    let skipped = 0;
-    let pruned;
-    let listingReachedEnd;
-    let limitHit = false;
-    let interrupted;
-    let stopReason;
-    const record = (article, filename, status) => {
+    let state = await loadSyncState(deps), sidecarIds = await readSidecarIds(deps, dir, files), nextState = { articles: { ...state.articles } }, limit = syncLimitOf(config), pulled = 0, failed = 0, skipped = 0, pruned, listingReachedEnd, limitHit = !1, interrupted, stopReason, record = (article, filename, status) => {
       nextState.articles[String(article.id)] = { filename, status };
     };
     try {
       if (pruneEnabled(config)) {
-        const outcome = await pruneArticles(
+        let outcome = await pruneArticles(
           deps,
           config,
           authHeaders,
+          dir,
           state,
           files,
           sidecarIds,
           nextState,
           onProgress
         );
-        pruned = outcome.pruned;
-        files = outcome.files;
+        pruned = outcome.pruned, files = outcome.files;
       }
-      const pulledIds = computePulledIds(nextState, files, sidecarIds);
-      const names = new Set(files.map((name) => basename(name)));
-      const candidates = [];
-      const candidateIds = /* @__PURE__ */ new Set();
-      const addWalk = (walk) => {
-        for (const article of walk.items) {
-          if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
-            candidateIds.add(article.id);
-            candidates.push(article);
-          }
-        }
-      };
-      const unread = await walkEntries(
+      let pulledIds = computePulledIds(nextState, files, sidecarIds), names = new Set(files.map((name) => basename(name))), candidates = [], candidateIds = /* @__PURE__ */ new Set(), addWalk = (walk) => {
+        for (let article of walk.items)
+          !pulledIds.has(article.id) && !candidateIds.has(article.id) && (candidateIds.add(article.id), candidates.push(article));
+      }, unread = await walkEntries(
         deps,
         config,
         authHeaders,
         { archive: "0" },
         onProgress
       );
-      addWalk(unread);
-      listingReachedEnd = unread.reachedEnd;
-      interrupted = unread.interrupted;
-      stopReason = unread.stopReason;
-      if (syncFavouritesEnabled(config) && !interrupted) {
-        const starred = await walkEntries(
+      if (addWalk(unread), listingReachedEnd = unread.reachedEnd, interrupted = unread.interrupted, stopReason = unread.stopReason, syncFavouritesEnabled(config) && !interrupted) {
+        let starred = await walkEntries(
           deps,
           config,
           authHeaders,
           { starred: "1" },
           onProgress
         );
-        addWalk(starred);
-        listingReachedEnd = listingReachedEnd && starred.reachedEnd;
-        interrupted = starred.interrupted;
-        stopReason = starred.stopReason;
+        addWalk(starred), listingReachedEnd = listingReachedEnd && starred.reachedEnd, interrupted = starred.interrupted, stopReason = starred.stopReason;
       }
-      for (const [i, article] of candidates.entries()) {
+      for (let [i, article] of candidates.entries()) {
         if (pulled >= limit) {
-          limitHit = true;
+          limitHit = !0;
           break;
         }
         onProgress?.({
@@ -1082,30 +847,19 @@
           total: candidates.length,
           title: article.title
         });
-        const datePrefix = config.date_prefixed_filenames ? formatDatePrefix(article.created_at) : void 0;
-        const filename = chooseFilename(
+        let datePrefix = config.date_prefixed_filenames ? formatDatePrefix(article.created_at) : void 0, filename = chooseFilename(
           article.title,
           article.id,
           names,
           datePrefix
         );
         names.add(filename);
-        const dest = `${WALLABAG_DIR}/${filename}`;
-        const exportUrl = `${normalizeServerUrl(config.server_url)}/api/entries/${article.id}/export.epub`;
+        let dest = `${dir}/${filename}`, exportUrl = `${normalizeServerUrl(config.server_url)}/api/entries/${article.id}/export.epub`;
         try {
-          const outcome = await deps.fetchToSd(exportUrl, dest, authHeaders);
-          const verdict = classifyOutcome(outcome);
-          if (verdict === "skipped") {
-            skipped += 1;
-          } else if (verdict === "failed") {
-            failed += 1;
-          } else {
-            pulled += 1;
-          }
-          record(article, filename, verdict);
+          let outcome = await deps.fetchToSd(exportUrl, dest, authHeaders), verdict = classifyOutcome(outcome);
+          verdict === "skipped" ? skipped += 1 : verdict === "failed" ? failed += 1 : pulled += 1, record(article, filename, verdict);
         } catch {
-          failed += 1;
-          record(article, filename, "failed");
+          failed += 1, record(article, filename, "failed");
         }
         pulledIds.add(article.id);
       }
@@ -1127,11 +881,8 @@
     };
   }
   function main() {
-    const crossPoint = globalThis.CrossPoint;
-    if (crossPoint === void 0) {
-      return;
-    }
-    crossPoint.registerPlugin((container, api) => {
+    let crossPoint = globalThis.CrossPoint;
+    crossPoint !== void 0 && crossPoint.registerPlugin((container, api) => {
       renderForm(container, api);
     });
   }

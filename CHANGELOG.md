@@ -3,6 +3,14 @@
 ## 0.1.0
 
 - Initial release: setup wizard, on-reader catalog, and EPUB download.
+- Feature: configurable **Article folder** (`wallabag_dir`, default
+  `/Wallabag`). The wizard accepts an absolute device path, normalizing
+  duplicate/trailing slashes and rejecting relative paths, `.`/`..`
+  segments, control characters, and the SD root before falling back to
+  `/Wallabag`. Sync lists, reads sidecars from, downloads into, and prunes
+  inside that folder; `device.json` uses the same `{cfg.wallabag_dir}` for
+  catalog downloads. Changing the folder re-downloads articles into the new
+  location and leaves the old folder for you to remove.
 - Feature: optional **Sync favourite articles** (`sync_favourites`, off by
   default). When on, Sync also walks wallabag's starred list and pulls those
   articles, including starred-but-archived ones, after the unread batch. The

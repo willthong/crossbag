@@ -73,7 +73,7 @@ export const DeviceSchema = z.object({
   download: z.object({
     url: TemplateStringSchema,
     headers: z.record(z.string(), TemplateStringSchema).optional(),
-    dest_dir: z.string(),
+    dest_dir: TemplateStringSchema,
     filename: z.string(),
     sidecar: z
       .object({

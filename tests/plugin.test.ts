@@ -6,7 +6,9 @@ import {
   buildSyncDeps,
   buildTestRequest,
   buildTokenRequest,
+  DEFAULT_WALLABAG_DIR,
   encodeBase64Utf8,
+  normalizeWallabagDir,
   pluginFilePath,
   renderForm,
   serverUrlProblem,
@@ -24,6 +26,7 @@ const formValues: SetupFormValues = {
   clientSecret: 'client-secret',
   username: 'café ☕',
   password: 'pässwörd',
+  wallabagDir: '/Wallabag',
   syncLimit: '50',
   datePrefixedFilenames: 'false',
   pruneOnSync: 'true',
@@ -95,6 +98,7 @@ describe('setup wizard config', () => {
       password: 'pässwörd',
       auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
+      wallabag_dir: '/Wallabag',
       date_prefixed_filenames: false,
       prune_on_sync: true,
       sync_favourites: false,
@@ -210,6 +214,7 @@ describe('setup wizard form', () => {
       'syncFavourites',
       'syncLimit',
       'username',
+      'wallabagDir',
     ]);
     expect(buttonByText(container, 'Test Connection')).toBeDefined();
     expect(buttonByText(container, 'Save')).toBeDefined();
@@ -274,6 +279,7 @@ describe('setup wizard form', () => {
       password: 'pässwörd',
       auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
+      wallabag_dir: '/Wallabag',
       date_prefixed_filenames: false,
       prune_on_sync: true,
       sync_favourites: false,
@@ -536,6 +542,60 @@ describe('setup wizard connection test auth flow', () => {
   });
 });
 
+describe('article folder', () => {
+  it('renders an article folder text input defaulting to /Wallabag', () => {
+    const container = document.createElement('div');
+
+    renderForm(container, makeApi());
+
+    const input = inputByName(container, 'wallabagDir');
+
+    expect(input.type).toBe('text');
+    expect(input.value).toBe(DEFAULT_WALLABAG_DIR);
+  });
+
+  it('persists the normalized folder in config.json', () => {
+    const config = buildConfig({
+      ...formValues,
+      wallabagDir: '  //Books//Articles/  ',
+    });
+
+    expect(config.wallabag_dir).toBe('/Books/Articles');
+  });
+
+  it('falls back to /Wallabag for a legacy form without the field', () => {
+    const legacy: Partial<SetupFormValues> = { ...formValues };
+    delete legacy.wallabagDir;
+
+    const config = buildConfig(legacy as SetupFormValues);
+
+    expect(config.wallabag_dir).toBe(DEFAULT_WALLABAG_DIR);
+  });
+
+  it('normalizes an empty, relative, root or traversal value to the default', () => {
+    expect(normalizeWallabagDir(undefined)).toBe(DEFAULT_WALLABAG_DIR);
+    expect(normalizeWallabagDir('')).toBe(DEFAULT_WALLABAG_DIR);
+    expect(normalizeWallabagDir('   ')).toBe(DEFAULT_WALLABAG_DIR);
+    expect(normalizeWallabagDir('Books')).toBe(DEFAULT_WALLABAG_DIR);
+    expect(normalizeWallabagDir('/')).toBe(DEFAULT_WALLABAG_DIR);
+    expect(normalizeWallabagDir('/Books/../Secret'))
+      .toBe(DEFAULT_WALLABAG_DIR);
+    expect(normalizeWallabagDir('/Books/./Articles'))
+      .toBe(DEFAULT_WALLABAG_DIR);
+    expect(normalizeWallabagDir('/Books\u0000Articles'))
+      .toBe(DEFAULT_WALLABAG_DIR);
+  });
+
+  it('trims whitespace and collapses duplicate or trailing slashes', () => {
+    expect(normalizeWallabagDir(' /Books ')).toBe('/Books');
+    expect(normalizeWallabagDir('/Books/')).toBe('/Books');
+    expect(normalizeWallabagDir('//Books///Articles//')).toBe(
+      '/Books/Articles',
+    );
+    expect(normalizeWallabagDir('/Wallabag')).toBe('/Wallabag');
+  });
+});
+
 describe('setup wizard sync limit', () => {
   it('renders a sync_limit number input defaulting to 50, bounded 1-500', () => {
     const container = document.createElement('div');
@@ -579,6 +639,7 @@ const SYNC_CONFIG: WallabagConfig = {
   username: 'café ☕',
   password: 'pässwörd',
   sync_limit: 50,
+  wallabag_dir: '/Wallabag',
   prune_on_sync: true,
   sync_favourites: false,
 };
@@ -990,6 +1051,26 @@ describe('setup wizard prefill', () => {
 
     expect(input, 'missing prune checkbox').not.toBeNull();
     expect(input?.checked).toBe(false);
+  });
+
+  it('prefills a custom article folder from config.json', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+    const custom = { ...savedConfig, wallabag_dir: '/Books/Articles/' };
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], config: custom }),
+    );
+
+    renderForm(container, api, fetchImpl);
+
+    await vi.waitFor(() => {
+      expect(inputByName(container, 'serverUrl').value).toBe(
+        savedConfig.server_url,
+      );
+    });
+
+    expect(inputByName(container, 'wallabagDir').value)
+      .toBe('/Books/Articles');
   });
 
   it('checks the sync favourites box when the saved config has the flag on', async () => {
@@ -1448,7 +1529,10 @@ describe('setup wizard Sync', () => {
     });
 
     const text = syncStatus(container).textContent ?? '';
-    expect(text).toBe('Could not list /Wallabag: listing down');
+    expect(text).toBe(
+      'Could not list /Wallabag: listing down. Check that the article folder ' +
+        'exists on the SD card.',
+    );
     expect(text).not.toContain('Reading unread list:');
     expect(text).not.toContain('Downloading');
 

@@ -19,20 +19,26 @@ Create Hotspot on public Wi-Fi.
 Daily use
 
 Open the Crossbag catalog on the reader, browse your unread articles newest
-first, and pick one. It downloads to /Wallabag as an EPUB.
+first, and pick one. It downloads to your article folder (default /Wallabag)
+as an EPUB.
 
 Bulk pull (Sync)
 
 With File Transfer running, open the web UI Plugins page, select Crossbag,
 and choose Sync. Sync loads config.json, pulls up to your sync_limit
-(default 50) unread articles, and saves them to /Wallabag. Run it again for
-the next batch.
+(default 50) unread articles, and saves them to your article folder (default
+/Wallabag). Run it again for the next batch.
+
+The Article folder field sets that location. It must be an absolute path on
+the card, and the folder must already exist. Changing it re-downloads your
+articles into the new folder and leaves the old one untouched, so delete the
+old folder yourself.
 
 Tick Sync favourite articles to pull starred articles too, including ones
 you archived; a starred unread article is pulled only once. Sync also
 prunes: articles you archived or deleted in wallabag have their EPUB and
-sidecar removed from /Wallabag, except archived favourites while that
-checkbox is on. A failed check never deletes anything. Turn pruning off
+sidecar removed from the article folder, except archived favourites while
+that checkbox is on. A failed check never deletes anything. Turn pruning off
 with the Prune archived articles checkbox.
 
 The browser page must stay open while Sync runs. If config.json is missing,

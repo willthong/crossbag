@@ -47,6 +47,7 @@ const ALLOWED_VARIABLES = [
   '{cfg.server_url}',
   '{cfg.client_id}',
   '{cfg.auth_body}',
+  '{cfg.wallabag_dir}',
   '{token}',
   '{page}',
   '{limit}',
@@ -96,7 +97,7 @@ describe('device catalog', () => {
     expect(parsed.browse.fields.url).toBe('url');
     expect(parsed.download.url)
       .toBe('{cfg.server_url}/api/entries/{id}/export.epub');
-    expect(parsed.download.dest_dir).toBe('/Wallabag');
+    expect(parsed.download.dest_dir).toBe('{cfg.wallabag_dir}');
     expect(parsed.download.filename).toBe('{title}.epub');
   });
 

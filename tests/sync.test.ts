@@ -9,6 +9,7 @@ const CONFIG: WallabagConfig = {
   username: 'reader',
   password: 'hunter2',
   sync_limit: 50,
+  wallabag_dir: '/Wallabag',
   prune_on_sync: true,
   sync_favourites: false,
 };
@@ -23,6 +24,10 @@ function configWithPrefix(datePrefixedFilenames: boolean): WallabagConfig {
 
 function configWithFavourites(syncFavourites: boolean): WallabagConfig {
   return { ...CONFIG, sync_favourites: syncFavourites };
+}
+
+function configWithDir(wallabagDir: string): WallabagConfig {
+  return { ...CONFIG, wallabag_dir: wallabagDir };
 }
 
 /** A wallabag article, with the minimum fields the entries schema requires. */
@@ -360,6 +365,73 @@ describe('runSync device files', () => {
 
     expect(result.pulled).toBe(1);
     expect(harness.fetchCalls.map((call) => call.id)).toEqual([1]);
+  });
+});
+
+describe('runSync configured article folder', () => {
+  it('lists, reads sidecars from, and downloads into the configured folder', async () => {
+    const harness = makeHarness({
+      pages: [[1]],
+      files: ['Existing.epub', 'Existing.epub.meta.json'],
+      sidecars: {
+        'Existing.epub.meta.json': JSON.stringify({ book_id: 7 }),
+      },
+    });
+
+    await runSync(harness.deps, configWithDir('//Books///Articles//'));
+
+    expect(harness.listFiles).toHaveBeenCalledWith('/Books/Articles');
+    expect(harness.readFile).toHaveBeenCalledWith(
+      '/Books/Articles/Existing.epub.meta.json',
+    );
+    expect(harness.fetchCalls.map((call) => call.dest)).toEqual([
+      '/Books/Articles/Article 1.epub',
+    ]);
+  });
+
+  it('dedupes a sidecar found in the configured folder', async () => {
+    const harness = makeHarness({
+      pages: [[7]],
+      files: ['On the beach.epub', 'On the beach.epub.meta.json'],
+      sidecars: {
+        'On the beach.epub.meta.json': JSON.stringify({ book_id: 7 }),
+      },
+    });
+
+    const result = await runSync(harness.deps, configWithDir('/Books'));
+
+    expect(result.pulled).toBe(0);
+    expect(harness.fetchToSd).not.toHaveBeenCalled();
+    expect(harness.readFile).toHaveBeenCalledWith(
+      '/Books/On the beach.epub.meta.json',
+    );
+  });
+
+  it('defaults to /Wallabag when the folder is missing or invalid', async () => {
+    for (const dir of [undefined, '/', '/Books/..']) {
+      const harness = makeHarness({ pages: [[]] });
+      const config = {
+        ...CONFIG,
+        wallabag_dir: dir,
+      } as unknown as WallabagConfig;
+
+      await runSync(harness.deps, config);
+
+      expect(harness.listFiles).toHaveBeenCalledWith('/Wallabag');
+    }
+  });
+
+  it('names the configured folder when its listing fails', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      listError: new Error('listing unavailable'),
+    });
+
+    await expect(
+      runSync(harness.deps, configWithDir('/Books')),
+    ).rejects.toThrow(/Could not list \/Books[\s\S]*article folder/);
+
+    expect(harness.fetchToSd).not.toHaveBeenCalled();
   });
 });
 
@@ -925,6 +997,26 @@ function entryCalls(relay: {
 }
 
 describe('runSync prune', () => {
+  it('scopes deletes to the configured article folder', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Gone.epub', 'Gone.epub.meta.json'],
+      syncState: {
+        articles: { '5': { filename: 'Gone.epub', status: 'pulled' } },
+      },
+      entryResponse: (id) => ({ status: 200, body: archivedBody(id) }),
+    });
+
+    const result = await runSync(harness.deps, configWithDir('/Books'));
+
+    expect(harness.listFiles).toHaveBeenCalledWith('/Books');
+    expect(result.pruned).toBe(1);
+    expect(harness.deleteCalls).toEqual([
+      '/Books/Gone.epub',
+      '/Books/Gone.epub.meta.json',
+    ]);
+  });
+
   it('prunes an archived tracked EPUB and its sidecar', async () => {
     const harness = makeHarness({
       pages: [[]],

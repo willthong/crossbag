@@ -29,7 +29,7 @@
   },
   "download": {
     "url": "{cfg.server_url}/api/entries/{id}/export.epub",
-    "dest_dir": "/Wallabag",
+    "dest_dir": "{cfg.wallabag_dir}",
     "filename": "{title}.epub",
     "headers": {
       "Authorization": "Bearer {token}"

@@ -10,6 +10,12 @@ A saved web page in wallabag. Each article has a title, URL, domain, tags,
 and archived/starred status. The plugin downloads articles as EPUBs.
 _Avoid_: Story, entry (wallabag's API name — use "article" in our domain).
 
+**Article folder**:
+The configurable `/Wallabag` replacement where pulled EPUBs land, set by
+`wallabag_dir` (default `/Wallabag`). Sync and the on-reader catalog must use
+the same folder or the mirror splits in two.
+_Avoid_: Wallabag dir, library path, download folder.
+
 **Added date**:
 An article's wallabag `created_at` timestamp — when it was saved to wallabag.
 It is the article's canonical sort key (the catalog browses by it, and the

@@ -8,6 +8,9 @@ export const SYNC_LIMIT_DEFAULT = 50;
 export const SYNC_LIMIT_MIN = 1;
 export const SYNC_LIMIT_MAX = 500;
 
+/** The article folder used when none is configured or the value is invalid. */
+export const DEFAULT_WALLABAG_DIR = '/Wallabag';
+
 /** Values collected by the setup wizard's form. */
 export interface SetupFormValues {
   serverUrl: string;
@@ -15,6 +18,7 @@ export interface SetupFormValues {
   clientSecret: string;
   username: string;
   password: string;
+  wallabagDir: string;
   syncLimit: string;
   datePrefixedFilenames: string;
   pruneOnSync: string;
@@ -50,6 +54,12 @@ const FIELDS: readonly FieldSpec[] = [
   { name: 'clientSecret', label: 'Client Secret', type: 'password', value: '' },
   { name: 'username', label: 'Username', type: 'text', value: '' },
   { name: 'password', label: 'Password', type: 'password', value: '' },
+  {
+    name: 'wallabagDir',
+    label: 'Article folder',
+    type: 'text',
+    value: DEFAULT_WALLABAG_DIR,
+  },
   {
     name: 'syncLimit',
     label: 'Articles per sync',
@@ -97,6 +107,43 @@ export function parseSyncLimit(raw: string): number {
   }
 
   return clampSyncLimit(parsed);
+}
+
+/**
+ * Normalize an article-folder value into a safe absolute device path. Invalid
+ * input falls back to the default rather than failing Save, matching how
+ * `parseSyncLimit` tolerates bad input.
+ */
+export function normalizeWallabagDir(raw: string | undefined): string {
+  if (typeof raw !== 'string') {
+    return DEFAULT_WALLABAG_DIR;
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed === '' || !trimmed.startsWith('/')) {
+    return DEFAULT_WALLABAG_DIR;
+  }
+  // NUL and other control characters cannot be represented in a device path.
+  for (const char of trimmed) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) {
+      return DEFAULT_WALLABAG_DIR;
+    }
+  }
+
+  const collapsed = trimmed
+    .replace(/\/+$/, '')
+    .replace(/\/{2,}/g, '/');
+  if (collapsed === '' || collapsed === '/') {
+    return DEFAULT_WALLABAG_DIR;
+  }
+
+  const segments = collapsed.split('/');
+  if (segments.some((segment) => segment === '.' || segment === '..')) {
+    return DEFAULT_WALLABAG_DIR;
+  }
+
+  return collapsed;
 }
 
 /**
@@ -160,6 +207,7 @@ export function buildConfig(values: SetupFormValues): WallabagConfig {
     // wizard stores the finished, encoded body for it to send verbatim.
     auth_body: buildTokenRequest(values).body,
     sync_limit: parseSyncLimit(values.syncLimit),
+    wallabag_dir: normalizeWallabagDir(values.wallabagDir),
     date_prefixed_filenames: values.datePrefixedFilenames === 'true',
     // A form rendered before the checkbox existed omits the key; pruning is
     // the intended default, so only an explicit "off" turns it off.
@@ -206,6 +254,7 @@ function readValues(inputs: InputMap): SetupFormValues {
     clientSecret: inputs.clientSecret.value,
     username: inputs.username.value,
     password: inputs.password.value,
+    wallabagDir: inputs.wallabagDir.value,
     syncLimit: inputs.syncLimit.value,
     datePrefixedFilenames: inputs.datePrefixedFilenames.checked
       ? 'true'
@@ -648,7 +697,7 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/** Pick a unique `.epub` filename for an article in `/Wallabag`. */
+/** Pick a unique `.epub` filename for an article in the article folder. */
 export function chooseFilename(
   title: string,
   id: number,
@@ -836,7 +885,7 @@ export interface SyncResult {
   interrupted: boolean;
   /** Why paging stopped early, when interrupted. */
   stopReason?: string;
-  /** Articles pruned from `/Wallabag`; absent when pruning is disabled. */
+  /** Articles pruned from the article folder; absent when pruning is disabled. */
   pruned?: number;
 }
 
@@ -900,7 +949,8 @@ function fileNamesFromListing(payload: unknown): string[] {
 
 /**
  * Resolve a plugin-owned file name against the plugin's own SD folder.
- * Device-absolute paths (sidecars under `/Wallabag`) pass through unchanged;
+ * Device-absolute paths (sidecars under the article folder) pass through
+ * unchanged;
  * `writeFile` requires an absolute path, so bare names cannot be sent as-is.
  *
  * A missing `api.dir` means the firmware predates it: throwing here beats
@@ -972,7 +1022,6 @@ export function buildSyncDeps(api: SyncDepsApi, fetchImpl: FetchLike): SyncDeps 
   };
 }
 
-const WALLABAG_DIR = '/Wallabag';
 const SYNC_STATE_PATH = 'sync-state.json';
 const CONFIG_PATH = 'config.json';
 // The device relay buffers a whole reply in RAM and refuses anything over
@@ -1020,6 +1069,7 @@ function configValues(config: WallabagConfig): SetupFormValues {
     clientSecret: config.client_secret,
     username: config.username,
     password: config.password,
+    wallabagDir: normalizeWallabagDir(config.wallabag_dir),
     syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
     datePrefixedFilenames:
       config.date_prefixed_filenames === true ? 'true' : 'false',
@@ -1268,7 +1318,14 @@ function isWallabagConfig(value: unknown): value is WallabagConfig {
   }
 
   const limit = value.sync_limit;
-  return limit === undefined || typeof limit === 'number';
+  if (limit !== undefined && typeof limit !== 'number') {
+    return false;
+  }
+
+  return (
+    value.wallabag_dir === undefined ||
+    typeof value.wallabag_dir === 'string'
+  );
 }
 
 /** Load the saved `config.json`; Sync never trusts blank form fields. */
@@ -1309,6 +1366,7 @@ function parseSidecarId(body: string): number | undefined {
 /** Read the sidecars that have a matching EPUB on disk, mapping name to id. */
 async function readSidecarIds(
   deps: SyncDeps,
+  dir: string,
   files: string[],
 ): Promise<Record<string, number>> {
   const names = files.map((name) => basename(name));
@@ -1321,7 +1379,7 @@ async function readSidecarIds(
   const reads = await Promise.all(
     sidecars.map(async (name): Promise<[string, number] | undefined> => {
       try {
-        const raw = await deps.readFile(`${WALLABAG_DIR}/${name}`);
+        const raw = await deps.readFile(`${dir}/${name}`);
         const id = parseSidecarId(raw);
         return id === undefined ? undefined : [name, id];
       } catch {
@@ -1492,6 +1550,7 @@ async function pruneArticles(
   deps: SyncDeps,
   config: WallabagConfig,
   authHeaders: Record<string, string>,
+  dir: string,
   state: SyncState,
   files: string[],
   sidecarIds: Record<string, number>,
@@ -1526,7 +1585,7 @@ async function pruneArticles(
 
       let status: number;
       try {
-        ({ status } = await deps.deleteFile(`${WALLABAG_DIR}/${actual}`));
+        ({ status } = await deps.deleteFile(`${dir}/${actual}`));
       } catch {
         status = 0;
       }
@@ -1575,18 +1634,21 @@ export async function runSync(
 ): Promise<SyncResult> {
   const token = await obtainToken(deps, config);
   const authHeaders = { Authorization: `Bearer ${token}` };
+  const dir = normalizeWallabagDir(config.wallabag_dir);
 
   let files: string[];
   try {
-    files = await deps.listFiles(WALLABAG_DIR);
+    files = await deps.listFiles(dir);
   } catch (error) {
-    throw new Error(`Could not list ${WALLABAG_DIR}: ${describeError(error)}`, {
-      cause: error,
-    });
+    throw new Error(
+      `Could not list ${dir}: ${describeError(error)}. Check that the ` +
+        'article folder exists on the SD card.',
+      { cause: error },
+    );
   }
 
   const state = await loadSyncState(deps);
-  const sidecarIds = await readSidecarIds(deps, files);
+  const sidecarIds = await readSidecarIds(deps, dir, files);
   const nextState: SyncState = { articles: { ...state.articles } };
 
   const limit = syncLimitOf(config);
@@ -1615,6 +1677,7 @@ export async function runSync(
         deps,
         config,
         authHeaders,
+        dir,
         state,
         files,
         sidecarIds,
@@ -1696,7 +1759,7 @@ export async function runSync(
         datePrefix,
       );
       names.add(filename);
-      const dest = `${WALLABAG_DIR}/${filename}`;
+      const dest = `${dir}/${filename}`;
       const exportUrl =
         `${normalizeServerUrl(config.server_url)}` +
         `/api/entries/${article.id}/export.epub`;

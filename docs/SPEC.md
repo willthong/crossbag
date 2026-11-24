@@ -9,16 +9,16 @@ Two interfaces with a strict split:
 ```
 plugin.js   →  setup wizard + Sync (browser on phone/computer)
                - Form: server URL, client ID, client secret, username,
-                 password, sync_limit, date_prefixed_filenames,
-                 prune_on_sync, sync_favourites; prefilled from config.json
-                 when saved
+                 password, wallabag_dir, sync_limit,
+                 date_prefixed_filenames, prune_on_sync, sync_favourites;
+                 prefilled from config.json when saved
                - "Test Connection" button → api.relay()
                  (server URL is trimmed and must be a full http(s)://host
                  address; a device relay failure is reported in words)
                - "Save" button → api.writeFile() writes config.json
-               - "Sync" button → loads config.json via readFile(), lists
-                 /Wallabag, prunes archived/deleted tracked EPUBs via
-                 POST /delete (keeping archived favourites when
+               - "Sync" button → loads config.json via readFile(), lists the
+                 normalized wallabag_dir, prunes archived/deleted tracked
+                 EPUBs via POST /delete (keeping archived favourites when
                  sync_favourites is on), pages unread and optionally starred
                  articles, unions them by id, dedupes presence-aware,
                  downloads via api.fetchToSd(), writes sync-state.json
@@ -27,7 +27,8 @@ device.json →  daily on-reader catalog
                - Reads config.json via {cfg.*} templates
                - Auth: OAuth2 password grant → Bearer token
                - Browse: GET /api/entries (unread, newest first, 8 per page)
-               - Download: GET /api/entries/{id}/export.epub → /Wallabag/
+               - Download: GET /api/entries/{id}/export.epub → the
+                 configured article folder (device.json dest_dir)
 ```
 
 ## Payload files
@@ -44,9 +45,9 @@ crossbag.crosspoint-plugin/
 Runtime files in the plugin folder on the SD card, not listed in
 `manifest.json → files`:
 
-- `config.json` — credentials, the pre-encoded `auth_body`, `sync_limit`,
-  `date_prefixed_filenames`, `prune_on_sync`, and `sync_favourites` written by
-  the wizard
+- `config.json` — credentials, the pre-encoded `auth_body`, `wallabag_dir`,
+  `sync_limit`, `date_prefixed_filenames`, `prune_on_sync`, and
+  `sync_favourites` written by the wizard
 - `sync-state.json` — Sync's ledger of attempted articles and statuses
 
 ## Wallabag API integration
@@ -64,9 +65,12 @@ Runtime files in the plugin folder on the SD card, not listed in
 - **Reconcile**: `GET /api/entries/{id}` per tracked article; prune only on a
   `404`, or on a truthy `is_archived` unless it is also starred while
   `sync_favourites` is on; never on an error or unreadable reply
-- **Download**: `GET /api/entries/{id}/export.epub`
+- **Download**: `GET /api/entries/{id}/export.epub`; `device.json` writes it
+  under `{cfg.wallabag_dir}`, and Sync uses the same normalized folder for
+  listing, sidecars, downloads, and Prune deletes
 - **Delete**: same-origin `POST /delete` with form field `path`, one file at a
-  time (see ADR 0003)
+  time (see ADR 0003); paths are always scoped to the configured article
+  folder
 - **Response format**: JSON, items under `_embedded.items`
 
 ## Plugin Hub publishing

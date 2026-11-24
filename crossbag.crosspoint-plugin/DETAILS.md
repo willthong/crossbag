@@ -20,8 +20,9 @@ download entirely from the device.
 ## Sync (bulk pull)
 
 Sync runs as a button in the browser setup page. It reads the saved
-`config.json`, lists `/Wallabag`, pages through unread articles newest
-first, and downloads up to `sync_limit` new EPUBs (default 50). With the
+`config.json`, lists the configured article folder (`wallabag_dir`, default
+`/Wallabag`), pages through unread articles newest first, and downloads up
+to `sync_limit` new EPUBs (default 50). With the
 `sync_favourites` flag on, it also walks wallabag's starred list and fills
 any remaining budget with those articles, including archived favourites;
 the two lists are unioned by article id so nothing downloads twice. It
@@ -53,8 +54,10 @@ computer). Enter:
 - your wallabag username and password
 
 The wizard checks the connection and saves the values to `config.json` on the
-SD card. You never edit raw JSON by hand. The same page also has **Sync**
-for pulling a batch of unread articles.
+SD card. You never edit raw JSON by hand. **Article folder** chooses where
+EPUBs land; it must be an absolute path that already exists, and changing it
+re-downloads articles without cleaning up the old folder. The same page also
+has **Sync** for pulling a batch of unread articles.
 
 ## Requirements
 

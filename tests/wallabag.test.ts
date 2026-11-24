@@ -214,6 +214,23 @@ describe('wallabag config prune', () => {
   });
 });
 
+describe('wallabag config article folder', () => {
+  it('accepts a custom wallabag_dir the wizard writes', () => {
+    const parsed = WallabagConfigSchema.parse({
+      ...wizardConfig,
+      wallabag_dir: '/Books/Articles',
+    });
+
+    expect(parsed.wallabag_dir).toBe('/Books/Articles');
+  });
+
+  it('defaults to /Wallabag for configs written before it existed', () => {
+    const parsed = WallabagConfigSchema.parse({ ...wizardConfig });
+
+    expect(parsed.wallabag_dir).toBe('/Wallabag');
+  });
+});
+
 describe('wallabag config favourites', () => {
   it('accepts the sync_favourites flag the wizard writes', () => {
     const parsed = WallabagConfigSchema.parse({

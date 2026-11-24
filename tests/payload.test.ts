@@ -164,11 +164,11 @@ describe('device catalog content', () => {
     expect(raw.browse.page_size).toBe(8);
   });
 
-  it('downloads EPUB exports into /Wallabag', async () => {
+  it('downloads EPUB exports into the configured article folder', async () => {
     const raw = await device();
 
     expect(raw.download.url).toContain('/export.epub');
-    expect(raw.download.dest_dir).toBe('/Wallabag');
+    expect(raw.download.dest_dir).toBe('{cfg.wallabag_dir}');
   });
 
   it('authorizes both browse and download with the stored token', async () => {
