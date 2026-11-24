@@ -28,6 +28,10 @@ and choose Sync. Sync loads config.json, pulls up to your sync_limit
 (default 50) unread articles, and saves them to /Wallabag. Run it again for
 the next batch.
 
+Sync also prunes: articles you archived or deleted in wallabag have their
+EPUB and sidecar removed from /Wallabag. A failed check never deletes
+anything. Turn this off with the Prune archived articles checkbox.
+
 The browser page must stay open while Sync runs. If config.json is missing,
 choose Save in the wizard first.
 

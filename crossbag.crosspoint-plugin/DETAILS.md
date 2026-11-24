@@ -25,6 +25,13 @@ first, and downloads up to `sync_limit` new EPUBs (default 50). It skips
 articles already on the card, including catalog pulls recorded in their
 `.meta.json` sidecars, and re-downloads an article whose EPUB was deleted.
 
+Before pulling, Sync prunes: it checks each article it previously recorded
+and deletes the EPUB and sidecar when wallabag says the article is archived
+or gone. Only a definite answer deletes; a network error, a server error, or
+an unreadable reply keeps the files, and files crossbag did not create are
+never touched. The `prune_on_sync` config flag (on by default) controls the
+phase.
+
 `sync-state.json` records every attempt as pulled, skipped, or failed.
 Skipped articles (deleted server-side) are not retried; failed ones are.
 The summary reports each count and warns when the list was not exhausted.

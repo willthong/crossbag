@@ -3,6 +3,14 @@
 ## 0.1.0
 
 - Initial release: setup wizard, on-reader catalog, and EPUB download.
+- Feature: **Prune** (`prune_on_sync`, on by default). Before pulling, Sync
+  now checks each article it previously downloaded and deletes the EPUB and
+  sidecar of any that wallabag reports archived or gone, so `/Wallabag`
+  mirrors the unread list in both directions. Checks are per-id and fail
+  safe: only a `404` or a truthy `is_archived` deletes, while a network
+  error, another status, or an unreadable body keeps the file. Files crossbag
+  did not record are never touched, the ledger entry is removed only after a
+  successful delete, and the summary gains an `N pruned` count.
 - Feature: the wizard's **Test Connection**, **Save** and **Sync** buttons are
   now coloured (neutral, blue, green) instead of looking like bare browser
   buttons. The styling ships in the plugin's own `<style>` block, namespaced

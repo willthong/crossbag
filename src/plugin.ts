@@ -17,6 +17,7 @@ export interface SetupFormValues {
   password: string;
   syncLimit: string;
   datePrefixedFilenames: string;
+  pruneOnSync: string;
 }
 
 export interface TestRequest {
@@ -61,6 +62,12 @@ const FIELDS: readonly FieldSpec[] = [
     label: 'Date-prefixed filenames',
     type: 'checkbox',
     value: 'false',
+  },
+  {
+    name: 'pruneOnSync',
+    label: 'Prune archived articles',
+    type: 'checkbox',
+    value: 'true',
   },
 ];
 
@@ -147,6 +154,9 @@ export function buildConfig(values: SetupFormValues): WallabagConfig {
     auth_body: buildTokenRequest(values).body,
     sync_limit: parseSyncLimit(values.syncLimit),
     date_prefixed_filenames: values.datePrefixedFilenames === 'true',
+    // A form rendered before the checkbox existed omits the key; pruning is
+    // the intended default, so only an explicit "off" turns it off.
+    prune_on_sync: values.pruneOnSync !== 'false',
   };
 }
 
@@ -190,6 +200,7 @@ function readValues(inputs: InputMap): SetupFormValues {
     datePrefixedFilenames: inputs.datePrefixedFilenames.checked
       ? 'true'
       : 'false',
+    pruneOnSync: inputs.pruneOnSync.checked ? 'true' : 'false',
   };
 }
 
@@ -434,6 +445,10 @@ function summarize(result: SyncResult, lastLine?: string): string {
     `${result.pulled} pulled · ${result.failed} failed (retries next sync) · ` +
     `${result.skipped} skipped (deleted server-side)`;
 
+  if (result.pruned !== undefined) {
+    summary += ` · ${result.pruned} pruned`;
+  }
+
   if (result.limitHit) {
     summary += ' — more unread articles remain.';
   }
@@ -475,10 +490,15 @@ async function syncArticles(
     const deps = buildSyncDeps(syncApi, fetchImpl);
     const config = await loadSavedConfig(deps);
     const result = await runSync(deps, config, (p) => {
-      lastStatusLine =
-        p.phase === 'reading'
-          ? `Reading unread list: page ${p.page}/${p.pages}`
-          : `Downloading ${p.index}/${p.total}${p.title ? `: ${p.title}` : ''}`;
+      if (p.phase === 'reading') {
+        lastStatusLine = `Reading unread list: page ${p.page}/${p.pages}`;
+      } else if (p.phase === 'pruning') {
+        lastStatusLine = `Pruning ${p.index}/${p.total}`;
+      } else {
+        lastStatusLine =
+          `Downloading ${p.index}/${p.total}` +
+          `${p.title ? `: ${p.title}` : ''}`;
+      }
       setStatus(status, lastStatusLine);
     });
     setStatus(status, summarize(result, lastStatusLine));
@@ -786,10 +806,13 @@ export interface SyncDeps {
   writeFile: (path: string, dataB64: string) => Promise<{ ok: boolean }>;
   listFiles: (path: string) => Promise<string[]>;
   readFile: (path: string) => Promise<string>;
+  /** `POST /delete` one file path; the device answers 2xx on success. */
+  deleteFile: (path: string) => Promise<{ status: number }>;
 }
 
 /** Phase-aware progress reported while Sync runs. */
 export type SyncProgress =
+  | { phase: 'pruning'; index: number; total: number }
   | { phase: 'reading'; page: number; pages: number }
   | { phase: 'downloading'; index: number; total: number; title: string };
 
@@ -802,6 +825,8 @@ export interface SyncResult {
   interrupted: boolean;
   /** Why paging stopped early, when interrupted. */
   stopReason?: string;
+  /** Articles pruned from `/Wallabag`; absent when pruning is disabled. */
+  pruned?: number;
 }
 
 /** Firmware handles Sync needs from `api`, beyond the setup-wizard surface. */
@@ -814,7 +839,16 @@ export interface SyncApi {
 }
 
 /** The slice of `fetch` Sync's device-file access depends on. */
-export type FetchLike = (url: string) => Promise<{
+export interface FetchInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export type FetchLike = (
+  url: string,
+  init?: FetchInit,
+) => Promise<{
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
@@ -916,6 +950,14 @@ export function buildSyncDeps(api: SyncDepsApi, fetchImpl: FetchLike): SyncDeps 
       }
       return await response.text();
     },
+    deleteFile: async (path) => {
+      const response = await fetchImpl('/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ path }).toString(),
+      });
+      return { status: response.status };
+    },
   };
 }
 
@@ -970,6 +1012,7 @@ function configValues(config: WallabagConfig): SetupFormValues {
     syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
     datePrefixedFilenames:
       config.date_prefixed_filenames === true ? 'true' : 'false',
+    pruneOnSync: config.prune_on_sync === false ? 'false' : 'true',
   };
 }
 
@@ -1195,6 +1238,194 @@ async function loadSyncState(deps: SyncDeps): Promise<SyncState> {
   }
 }
 
+/** Whether Sync should remove articles that left the unread list. */
+function pruneEnabled(config: WallabagConfig): boolean {
+  // Unset means a config written before the flag existed: prune by default.
+  return config.prune_on_sync !== false;
+}
+
+/** The EPUB and sidecar names crossbag recorded for one tracked article. */
+interface TrackedFiles {
+  epubs: string[];
+  sidecars: string[];
+}
+
+/**
+ * Collect the file names crossbag itself recorded for each article id: from
+ * the sync-state ledger (any status) and from sidecars whose EPUB is present.
+ * The map is a permission list, not a presence list: only names on it may be
+ * deleted, and an id stays on it even when its recorded files have vanished so
+ * a later archived response can retire the stale ledger entry.
+ */
+export function trackedFiles(
+  state: SyncState,
+  files: string[],
+  sidecarIds: Record<string, number>,
+): Map<number, TrackedFiles> {
+  const present = new Set(
+    files.map((name) => basename(name).toLowerCase()),
+  );
+  const tracked = new Map<number, TrackedFiles>();
+
+  const entryFor = (id: number): TrackedFiles => {
+    const existing = tracked.get(id);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const created: TrackedFiles = { epubs: [], sidecars: [] };
+    tracked.set(id, created);
+    return created;
+  };
+
+  const add = (list: string[], name: string): void => {
+    if (present.has(name.toLowerCase()) && !list.includes(name)) {
+      list.push(name);
+    }
+  };
+
+  for (const [rawId, entry] of Object.entries(state.articles)) {
+    const id = Number(rawId);
+    if (!Number.isInteger(id)) {
+      continue;
+    }
+
+    const recorded = entryFor(id);
+    const name = basename(entry.filename);
+    if (!name.toLowerCase().endsWith(EPUB_SUFFIX)) {
+      continue;
+    }
+    add(recorded.epubs, name);
+    add(recorded.sidecars, `${name}${SIDECAR_SUFFIX}`);
+  }
+
+  for (const [rawName, id] of Object.entries(sidecarIds)) {
+    const epub = sidecarEpub(basename(rawName));
+    if (epub === undefined) {
+      continue;
+    }
+    const recorded = entryFor(id);
+    add(recorded.sidecars, basename(rawName));
+    add(recorded.epubs, epub);
+  }
+
+  return tracked;
+}
+
+/**
+ * Decide whether the server no longer wants an article on the device.
+ *
+ * Only an authoritative, successful, parseable answer may prune: a `404`, or a
+ * `200` whose `is_archived` is truthy. Every failure or surprise keeps the
+ * files, because one broken sync must never cost the library.
+ */
+async function reconcileArticle(
+  deps: SyncDeps,
+  config: WallabagConfig,
+  authHeaders: Record<string, string>,
+  id: number,
+): Promise<'prune' | 'keep'> {
+  let response: { status: number; body: string };
+  try {
+    response = await deps.relay(
+      'GET',
+      `${normalizeServerUrl(config.server_url)}/api/entries/${id}`,
+      authHeaders,
+    );
+  } catch {
+    return 'keep';
+  }
+
+  if (response.status === 404) {
+    return 'prune';
+  }
+  if (!isOk(response.status)) {
+    return 'keep';
+  }
+
+  const parsed = parseJsonBody(response.body);
+  if (!isRecord(parsed) || !('is_archived' in parsed)) {
+    return 'keep';
+  }
+
+  return parsed.is_archived ? 'prune' : 'keep';
+}
+
+interface PruneOutcome {
+  pruned: number;
+  /** The listing with successfully deleted files removed. */
+  files: string[];
+}
+
+/**
+ * Mirror the folder to the server: delete the tracked EPUBs (and sidecars)
+ * whose articles were archived or deleted upstream. Files crossbag did not
+ * record are never candidates, whatever the decision table says.
+ */
+async function pruneArticles(
+  deps: SyncDeps,
+  config: WallabagConfig,
+  authHeaders: Record<string, string>,
+  state: SyncState,
+  files: string[],
+  sidecarIds: Record<string, number>,
+  nextState: SyncState,
+  onProgress?: (progress: SyncProgress) => void,
+): Promise<PruneOutcome> {
+  const tracked = trackedFiles(state, files, sidecarIds);
+  // FAT is case-insensitive, so recorded names match case-insensitively but
+  // deletion uses the listing's own spelling.
+  const present = new Map(
+    files.map((name) => [basename(name).toLowerCase(), basename(name)]),
+  );
+  let pruned = 0;
+  let index = 0;
+
+  for (const [id, recorded] of tracked) {
+    index += 1;
+    onProgress?.({ phase: 'pruning', index, total: tracked.size });
+
+    if ((await reconcileArticle(deps, config, authHeaders, id)) !== 'prune') {
+      continue;
+    }
+
+    let removedAll = true;
+    // EPUB first, then its sidecar, one call at a time so each success is
+    // known individually.
+    for (const name of [...recorded.epubs, ...recorded.sidecars]) {
+      const actual = present.get(name.toLowerCase());
+      if (actual === undefined) {
+        continue;
+      }
+
+      let status: number;
+      try {
+        ({ status } = await deps.deleteFile(`${WALLABAG_DIR}/${actual}`));
+      } catch {
+        status = 0;
+      }
+
+      if (!isOk(status)) {
+        removedAll = false;
+        continue;
+      }
+      present.delete(name.toLowerCase());
+    }
+
+    if (!removedAll) {
+      // Keep the ledger entry so the next Sync retries the delete instead of
+      // re-downloading the article under a `-{id}` renamed duplicate.
+      continue;
+    }
+
+    // The ledger key is a runtime string, so a dynamic delete is the point.
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete nextState.articles[String(id)];
+    pruned += 1;
+  }
+
+  return { pruned, files: [...present.values()] };
+}
+
 /** Classify one download: skipped, failed, or pulled. */
 function classifyOutcome(outcome: {
   status: number;
@@ -1229,14 +1460,13 @@ export async function runSync(
 
   const state = await loadSyncState(deps);
   const sidecarIds = await readSidecarIds(deps, files);
-  const pulledIds = computePulledIds(state, files, sidecarIds);
-  const names = new Set(files.map((name) => basename(name)));
   const nextState: SyncState = { articles: { ...state.articles } };
 
   const limit = syncLimitOf(config);
   let pulled = 0;
   let failed = 0;
   let skipped = 0;
+  let pruned: number | undefined;
   let page = 1;
   let pageSize = ENTRIES_PER_PAGE;
   let listingReachedEnd = false;
@@ -1252,81 +1482,112 @@ export async function runSync(
     nextState.articles[String(article.id)] = { filename, status };
   };
 
-  // Phase 1: walk the entire unread listing before downloading anything, so
-  // the progress total is the real number of articles that need syncing. The
-  // walk only fetches metadata; the downloads happen in phase 2.
-  const candidates: SyncArticle[] = [];
-  const candidateIds = new Set<number>();
-
-  while (true) {
-    const url = buildEntriesUrl(config.server_url, page, pageSize);
-    let response: { status: number; body: string };
-    try {
-      response = await deps.relay('GET', url, authHeaders);
-    } catch (error) {
-      // The device's relay rejects a reply it cannot buffer (over ~32 KB)
-      // with a 502. Metadata pages can still cross that line, so retry the
-      // walk at half the page size before giving up. Restarting from page 1
-      // discards the partial candidates, which the smaller pages re-discover.
-      if (
-        pageSize > MIN_ENTRIES_PER_PAGE &&
-        describeError(error).includes('large bodies')
-      ) {
-        pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
-        page = 1;
-        candidates.length = 0;
-        candidateIds.clear();
-        continue;
-      }
-      interrupted = true;
-      stopReason = describeRelayFailure(error);
-      break;
-    }
-
-    if (!isOk(response.status)) {
-      interrupted = true;
-      stopReason = `page ${page}: ${describeHttpFailure(response.status, response.body)}`;
-      break;
-    }
-
-    const listing = parseEntriesPage(response.body);
-    if (listing === undefined) {
-      interrupted = true;
-      stopReason = `page ${page}: the entries listing could not be read`;
-      break;
-    }
-    if (!listing.items.length) {
-      listingReachedEnd = true;
-      break;
-    }
-
-    onProgress?.({ phase: 'reading', page: listing.page, pages: Math.max(1, listing.pages) });
-
-    for (const article of listing.items) {
-      if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
-        candidateIds.add(article.id);
-        candidates.push(article);
-      }
-    }
-
-    if (page >= listing.pages) {
-      listingReachedEnd = true;
-      break;
-    }
-    page += 1;
-  }
-
-  // Phase 2: download the candidates newest-first until `sync_limit`
-  // successful pulls land or the candidate list is exhausted. Skips and
-  // failures do not consume the batch, matching the old skip-and-fill walk.
   try {
+    // Phase 0: prune what the server no longer lists as unread. This runs
+    // before paging so a stale local copy cannot shadow a pruned article.
+    if (pruneEnabled(config)) {
+      const outcome = await pruneArticles(
+        deps,
+        config,
+        authHeaders,
+        state,
+        files,
+        sidecarIds,
+        nextState,
+        onProgress,
+      );
+      pruned = outcome.pruned;
+      files = outcome.files;
+    }
+
+    const pulledIds = computePulledIds(nextState, files, sidecarIds);
+    const names = new Set(files.map((name) => basename(name)));
+
+    // Phase 1: walk the entire unread listing before downloading anything, so
+    // the progress total is the real number of articles that need syncing.
+    // The walk only fetches metadata; the downloads happen in phase 2.
+    const candidates: SyncArticle[] = [];
+    const candidateIds = new Set<number>();
+
+    while (true) {
+      const url = buildEntriesUrl(config.server_url, page, pageSize);
+      let response: { status: number; body: string };
+      try {
+        response = await deps.relay('GET', url, authHeaders);
+      } catch (error) {
+        // The device's relay rejects a reply it cannot buffer (over ~32 KB)
+        // with a 502. Metadata pages can still cross that line, so retry the
+        // walk at half the page size before giving up. Restarting from page 1
+        // discards the partial candidates, which the smaller pages re-discover.
+        if (
+          pageSize > MIN_ENTRIES_PER_PAGE &&
+          describeError(error).includes('large bodies')
+        ) {
+          pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
+          page = 1;
+          candidates.length = 0;
+          candidateIds.clear();
+          continue;
+        }
+        interrupted = true;
+        stopReason = describeRelayFailure(error);
+        break;
+      }
+
+      if (!isOk(response.status)) {
+        interrupted = true;
+        stopReason =
+          `page ${page}: ` +
+          describeHttpFailure(response.status, response.body);
+        break;
+      }
+
+      const listing = parseEntriesPage(response.body);
+      if (listing === undefined) {
+        interrupted = true;
+        stopReason = `page ${page}: the entries listing could not be read`;
+        break;
+      }
+      if (!listing.items.length) {
+        listingReachedEnd = true;
+        break;
+      }
+
+      onProgress?.({
+        phase: 'reading',
+        page: listing.page,
+        pages: Math.max(1, listing.pages),
+      });
+
+      for (const article of listing.items) {
+        if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
+          candidateIds.add(article.id);
+          candidates.push(article);
+        }
+      }
+
+      if (page >= listing.pages) {
+        listingReachedEnd = true;
+        break;
+      }
+      page += 1;
+    }
+
+    // Phase 2: download the candidates newest-first until `sync_limit`
+    // successful pulls land or the candidate list is exhausted. Skips and
+    // failures do not consume the batch, matching the old skip-and-fill walk.
     for (const [i, article] of candidates.entries()) {
       if (pulled >= limit) {
         limitHit = true;
         break;
       }
 
-      onProgress?.({ phase: 'downloading', index: i + 1, total: candidates.length, title: article.title });
+      onProgress?.({
+        phase: 'downloading',
+        index: i + 1,
+        total: candidates.length,
+        title: article.title,
+      });
 
       const datePrefix = config.date_prefixed_filenames
         ? formatDatePrefix(article.created_at)
@@ -1361,7 +1622,10 @@ export async function runSync(
       pulledIds.add(article.id);
     }
   } finally {
-    await deps.writeFile(SYNC_STATE_PATH, encodeBase64Utf8(JSON.stringify(nextState)));
+    await deps.writeFile(
+      SYNC_STATE_PATH,
+      encodeBase64Utf8(JSON.stringify(nextState)),
+    );
   }
 
   return {
@@ -1372,6 +1636,7 @@ export async function runSync(
     limitHit,
     interrupted,
     stopReason,
+    pruned,
   };
 }
 

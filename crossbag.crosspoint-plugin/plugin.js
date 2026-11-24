@@ -24,6 +24,12 @@
       label: "Date-prefixed filenames",
       type: "checkbox",
       value: "false"
+    },
+    {
+      name: "pruneOnSync",
+      label: "Prune archived articles",
+      type: "checkbox",
+      value: "true"
     }
   ];
   function clampSyncLimit(value) {
@@ -82,7 +88,10 @@
       // wizard stores the finished, encoded body for it to send verbatim.
       auth_body: buildTokenRequest(values).body,
       sync_limit: parseSyncLimit(values.syncLimit),
-      date_prefixed_filenames: values.datePrefixedFilenames === "true"
+      date_prefixed_filenames: values.datePrefixedFilenames === "true",
+      // A form rendered before the checkbox existed omits the key; pruning is
+      // the intended default, so only an explicit "off" turns it off.
+      prune_on_sync: values.pruneOnSync !== "false"
     };
   }
   function buildTokenRequest(values) {
@@ -114,7 +123,8 @@
       username: inputs.username.value,
       password: inputs.password.value,
       syncLimit: inputs.syncLimit.value,
-      datePrefixedFilenames: inputs.datePrefixedFilenames.checked ? "true" : "false"
+      datePrefixedFilenames: inputs.datePrefixedFilenames.checked ? "true" : "false",
+      pruneOnSync: inputs.pruneOnSync.checked ? "true" : "false"
     };
   }
   function describeError(error) {
@@ -285,6 +295,9 @@
   }
   function summarize(result, lastLine) {
     let summary = `${result.pulled} pulled \xB7 ${result.failed} failed (retries next sync) \xB7 ${result.skipped} skipped (deleted server-side)`;
+    if (result.pruned !== void 0) {
+      summary += ` \xB7 ${result.pruned} pruned`;
+    }
     if (result.limitHit) {
       summary += " \u2014 more unread articles remain.";
     }
@@ -315,7 +328,13 @@
       const deps = buildSyncDeps(syncApi, fetchImpl);
       const config = await loadSavedConfig(deps);
       const result = await runSync(deps, config, (p) => {
-        lastStatusLine = p.phase === "reading" ? `Reading unread list: page ${p.page}/${p.pages}` : `Downloading ${p.index}/${p.total}${p.title ? `: ${p.title}` : ""}`;
+        if (p.phase === "reading") {
+          lastStatusLine = `Reading unread list: page ${p.page}/${p.pages}`;
+        } else if (p.phase === "pruning") {
+          lastStatusLine = `Pruning ${p.index}/${p.total}`;
+        } else {
+          lastStatusLine = `Downloading ${p.index}/${p.total}${p.title ? `: ${p.title}` : ""}`;
+        }
         setStatus(status, lastStatusLine);
       });
       setStatus(status, summarize(result, lastStatusLine));
@@ -569,6 +588,14 @@
           throw new Error(`Could not read ${path} (HTTP ${response.status}).`);
         }
         return await response.text();
+      },
+      deleteFile: async (path) => {
+        const response = await fetchImpl("/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ path }).toString()
+        });
+        return { status: response.status };
       }
     };
   }
@@ -594,7 +621,8 @@
       username: config.username,
       password: config.password,
       syncLimit: String(config.sync_limit ?? SYNC_LIMIT_DEFAULT),
-      datePrefixedFilenames: config.date_prefixed_filenames === true ? "true" : "false"
+      datePrefixedFilenames: config.date_prefixed_filenames === true ? "true" : "false",
+      pruneOnSync: config.prune_on_sync === false ? "false" : "true"
     };
   }
   function syncLimitOf(config) {
@@ -770,6 +798,114 @@
       return { articles: {} };
     }
   }
+  function pruneEnabled(config) {
+    return config.prune_on_sync !== false;
+  }
+  function trackedFiles(state, files, sidecarIds) {
+    const present = new Set(
+      files.map((name) => basename(name).toLowerCase())
+    );
+    const tracked = /* @__PURE__ */ new Map();
+    const entryFor = (id) => {
+      const existing = tracked.get(id);
+      if (existing !== void 0) {
+        return existing;
+      }
+      const created = { epubs: [], sidecars: [] };
+      tracked.set(id, created);
+      return created;
+    };
+    const add = (list, name) => {
+      if (present.has(name.toLowerCase()) && !list.includes(name)) {
+        list.push(name);
+      }
+    };
+    for (const [rawId, entry] of Object.entries(state.articles)) {
+      const id = Number(rawId);
+      if (!Number.isInteger(id)) {
+        continue;
+      }
+      const recorded = entryFor(id);
+      const name = basename(entry.filename);
+      if (!name.toLowerCase().endsWith(EPUB_SUFFIX)) {
+        continue;
+      }
+      add(recorded.epubs, name);
+      add(recorded.sidecars, `${name}${SIDECAR_SUFFIX}`);
+    }
+    for (const [rawName, id] of Object.entries(sidecarIds)) {
+      const epub = sidecarEpub(basename(rawName));
+      if (epub === void 0) {
+        continue;
+      }
+      const recorded = entryFor(id);
+      add(recorded.sidecars, basename(rawName));
+      add(recorded.epubs, epub);
+    }
+    return tracked;
+  }
+  async function reconcileArticle(deps, config, authHeaders, id) {
+    let response;
+    try {
+      response = await deps.relay(
+        "GET",
+        `${normalizeServerUrl(config.server_url)}/api/entries/${id}`,
+        authHeaders
+      );
+    } catch {
+      return "keep";
+    }
+    if (response.status === 404) {
+      return "prune";
+    }
+    if (!isOk(response.status)) {
+      return "keep";
+    }
+    const parsed = parseJsonBody(response.body);
+    if (!isRecord(parsed) || !("is_archived" in parsed)) {
+      return "keep";
+    }
+    return parsed.is_archived ? "prune" : "keep";
+  }
+  async function pruneArticles(deps, config, authHeaders, state, files, sidecarIds, nextState, onProgress) {
+    const tracked = trackedFiles(state, files, sidecarIds);
+    const present = new Map(
+      files.map((name) => [basename(name).toLowerCase(), basename(name)])
+    );
+    let pruned = 0;
+    let index = 0;
+    for (const [id, recorded] of tracked) {
+      index += 1;
+      onProgress?.({ phase: "pruning", index, total: tracked.size });
+      if (await reconcileArticle(deps, config, authHeaders, id) !== "prune") {
+        continue;
+      }
+      let removedAll = true;
+      for (const name of [...recorded.epubs, ...recorded.sidecars]) {
+        const actual = present.get(name.toLowerCase());
+        if (actual === void 0) {
+          continue;
+        }
+        let status;
+        try {
+          ({ status } = await deps.deleteFile(`${WALLABAG_DIR}/${actual}`));
+        } catch {
+          status = 0;
+        }
+        if (!isOk(status)) {
+          removedAll = false;
+          continue;
+        }
+        present.delete(name.toLowerCase());
+      }
+      if (!removedAll) {
+        continue;
+      }
+      delete nextState.articles[String(id)];
+      pruned += 1;
+    }
+    return { pruned, files: [...present.values()] };
+  }
   function classifyOutcome(outcome) {
     if (outcome.status === 404 || outcome.status === 410) {
       return "skipped";
@@ -792,13 +928,12 @@
     }
     const state = await loadSyncState(deps);
     const sidecarIds = await readSidecarIds(deps, files);
-    const pulledIds = computePulledIds(state, files, sidecarIds);
-    const names = new Set(files.map((name) => basename(name)));
     const nextState = { articles: { ...state.articles } };
     const limit = syncLimitOf(config);
     let pulled = 0;
     let failed = 0;
     let skipped = 0;
+    let pruned;
     let page = 1;
     let pageSize = ENTRIES_PER_PAGE;
     let listingReachedEnd = false;
@@ -808,60 +943,85 @@
     const record = (article, filename, status) => {
       nextState.articles[String(article.id)] = { filename, status };
     };
-    const candidates = [];
-    const candidateIds = /* @__PURE__ */ new Set();
-    while (true) {
-      const url = buildEntriesUrl(config.server_url, page, pageSize);
-      let response;
-      try {
-        response = await deps.relay("GET", url, authHeaders);
-      } catch (error) {
-        if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
-          pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
-          page = 1;
-          candidates.length = 0;
-          candidateIds.clear();
-          continue;
-        }
-        interrupted = true;
-        stopReason = describeRelayFailure(error);
-        break;
-      }
-      if (!isOk(response.status)) {
-        interrupted = true;
-        stopReason = `page ${page}: ${describeHttpFailure(response.status, response.body)}`;
-        break;
-      }
-      const listing = parseEntriesPage(response.body);
-      if (listing === void 0) {
-        interrupted = true;
-        stopReason = `page ${page}: the entries listing could not be read`;
-        break;
-      }
-      if (!listing.items.length) {
-        listingReachedEnd = true;
-        break;
-      }
-      onProgress?.({ phase: "reading", page: listing.page, pages: Math.max(1, listing.pages) });
-      for (const article of listing.items) {
-        if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
-          candidateIds.add(article.id);
-          candidates.push(article);
-        }
-      }
-      if (page >= listing.pages) {
-        listingReachedEnd = true;
-        break;
-      }
-      page += 1;
-    }
     try {
+      if (pruneEnabled(config)) {
+        const outcome = await pruneArticles(
+          deps,
+          config,
+          authHeaders,
+          state,
+          files,
+          sidecarIds,
+          nextState,
+          onProgress
+        );
+        pruned = outcome.pruned;
+        files = outcome.files;
+      }
+      const pulledIds = computePulledIds(nextState, files, sidecarIds);
+      const names = new Set(files.map((name) => basename(name)));
+      const candidates = [];
+      const candidateIds = /* @__PURE__ */ new Set();
+      while (true) {
+        const url = buildEntriesUrl(config.server_url, page, pageSize);
+        let response;
+        try {
+          response = await deps.relay("GET", url, authHeaders);
+        } catch (error) {
+          if (pageSize > MIN_ENTRIES_PER_PAGE && describeError(error).includes("large bodies")) {
+            pageSize = Math.max(MIN_ENTRIES_PER_PAGE, Math.floor(pageSize / 2));
+            page = 1;
+            candidates.length = 0;
+            candidateIds.clear();
+            continue;
+          }
+          interrupted = true;
+          stopReason = describeRelayFailure(error);
+          break;
+        }
+        if (!isOk(response.status)) {
+          interrupted = true;
+          stopReason = `page ${page}: ` + describeHttpFailure(response.status, response.body);
+          break;
+        }
+        const listing = parseEntriesPage(response.body);
+        if (listing === void 0) {
+          interrupted = true;
+          stopReason = `page ${page}: the entries listing could not be read`;
+          break;
+        }
+        if (!listing.items.length) {
+          listingReachedEnd = true;
+          break;
+        }
+        onProgress?.({
+          phase: "reading",
+          page: listing.page,
+          pages: Math.max(1, listing.pages)
+        });
+        for (const article of listing.items) {
+          if (!pulledIds.has(article.id) && !candidateIds.has(article.id)) {
+            candidateIds.add(article.id);
+            candidates.push(article);
+          }
+        }
+        if (page >= listing.pages) {
+          listingReachedEnd = true;
+          break;
+        }
+        page += 1;
+      }
       for (const [i, article] of candidates.entries()) {
         if (pulled >= limit) {
           limitHit = true;
           break;
         }
-        onProgress?.({ phase: "downloading", index: i + 1, total: candidates.length, title: article.title });
+        onProgress?.({
+          phase: "downloading",
+          index: i + 1,
+          total: candidates.length,
+          title: article.title
+        });
         const datePrefix = config.date_prefixed_filenames ? formatDatePrefix(article.created_at) : void 0;
         const filename = chooseFilename(
           article.title,
@@ -890,7 +1050,10 @@
         pulledIds.add(article.id);
       }
     } finally {
-      await deps.writeFile(SYNC_STATE_PATH, encodeBase64Utf8(JSON.stringify(nextState)));
+      await deps.writeFile(
+        SYNC_STATE_PATH,
+        encodeBase64Utf8(JSON.stringify(nextState))
+      );
     }
     return {
       pulled,
@@ -899,7 +1062,8 @@
       reachedEnd: listingReachedEnd && !interrupted && !limitHit,
       limitHit,
       interrupted,
-      stopReason
+      stopReason,
+      pruned
     };
   }
   function main() {

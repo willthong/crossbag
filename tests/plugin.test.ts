@@ -26,6 +26,7 @@ const formValues: SetupFormValues = {
   password: 'pässwörd',
   syncLimit: '50',
   datePrefixedFilenames: 'false',
+  pruneOnSync: 'true',
 };
 
 function makeApi(relayResponse: RelayResponse = { status: 200, body: '{}' }) {
@@ -94,6 +95,7 @@ describe('setup wizard config', () => {
       auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
       date_prefixed_filenames: false,
+      prune_on_sync: true,
     });
   });
 
@@ -201,6 +203,7 @@ describe('setup wizard form', () => {
       'clientSecret',
       'datePrefixedFilenames',
       'password',
+      'pruneOnSync',
       'serverUrl',
       'syncLimit',
       'username',
@@ -269,6 +272,7 @@ describe('setup wizard form', () => {
       auth_body: buildTokenRequest(formValues).body,
       sync_limit: 50,
       date_prefixed_filenames: false,
+      prune_on_sync: true,
     });
   });
 
@@ -571,6 +575,7 @@ const SYNC_CONFIG: WallabagConfig = {
   username: 'café ☕',
   password: 'pässwörd',
   sync_limit: 50,
+  prune_on_sync: true,
 };
 
 interface ListingEntry {
@@ -694,6 +699,10 @@ function makeSyncFetch(options: SyncMountOptions): FetchLike {
   const listing = options.listing ?? okListing(options.files ?? []);
 
   return async (url) => {
+    if (url === '/delete') {
+      return textResponse('', 200);
+    }
+
     const prefix = '/download?path=';
     if (!url.startsWith(prefix)) {
       return await listing(url);
@@ -766,6 +775,39 @@ describe('setup wizard date-prefixed filenames', () => {
     const config = buildConfig(legacy as SetupFormValues);
 
     expect(config.date_prefixed_filenames).toBe(false);
+  });
+});
+
+describe('setup wizard prune on sync', () => {
+  it('renders a prune checkbox, checked by default', () => {
+    const container = document.createElement('div');
+
+    renderForm(container, makeApi());
+
+    const input = container.querySelector<HTMLInputElement>(
+      'input[name="pruneOnSync"]',
+    );
+
+    expect(input, 'missing prune checkbox').not.toBeNull();
+    expect(input?.type).toBe('checkbox');
+    expect(input?.checked).toBe(true);
+  });
+
+  it('maps the checkbox to prune_on_sync in config.json', () => {
+    const flagFor = (pruneOnSync: string): boolean | undefined =>
+      buildConfig({ ...formValues, pruneOnSync }).prune_on_sync;
+
+    expect(flagFor('true')).toBe(true);
+    expect(flagFor('false')).toBe(false);
+  });
+
+  it('prunes by default when an old form value has no checkbox', () => {
+    const legacy: Partial<SetupFormValues> = { ...formValues };
+    delete legacy.pruneOnSync;
+
+    const config = buildConfig(legacy as SetupFormValues);
+
+    expect(config.prune_on_sync).toBe(true);
   });
 });
 
@@ -886,6 +928,30 @@ describe('setup wizard prefill', () => {
       );
     });
     expect(inputByName(container, 'username').value).toBe('typed-user');
+  });
+
+  it('unchecks the prune box when the saved config turns it off', async () => {
+    const container = document.createElement('div');
+    const api = makeApi();
+    const pruneOff = { ...savedConfig, prune_on_sync: false };
+    const fetchImpl = vi.fn<FetchLike>(
+      makeSyncFetch({ articleIds: [], config: pruneOff }),
+    );
+
+    renderForm(container, api, fetchImpl);
+
+    await vi.waitFor(() => {
+      expect(inputByName(container, 'serverUrl').value).toBe(
+        pruneOff.server_url,
+      );
+    });
+
+    const input = container.querySelector<HTMLInputElement>(
+      'input[name="pruneOnSync"]',
+    );
+
+    expect(input, 'missing prune checkbox').not.toBeNull();
+    expect(input?.checked).toBe(false);
   });
 
   it('checks the date prefix box when the saved config has the flag on', async () => {
@@ -1031,6 +1097,32 @@ describe('buildSyncDeps', () => {
     const deps = buildSyncDeps(api, fetchImpl);
 
     await expect(deps.readFile('config.json')).rejects.toThrow(/404/);
+  });
+
+  it('deletes a file through the same-origin /delete endpoint', async () => {
+    const api = makeSyncApi({ articleIds: [] });
+    const fetchImpl = vi.fn<FetchLike>(async () => ({
+      ok: true,
+      status: 204,
+      json: async () => ({}),
+      text: async () => '',
+    }));
+
+    const deps = buildSyncDeps(api, fetchImpl);
+
+    await expect(deps.deleteFile('/Wallabag/Gone.epub')).resolves.toEqual({
+      status: 204,
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(url).toBe('/delete');
+    expect(init?.method).toBe('POST');
+    expect(init?.headers?.['Content-Type']).toBe(
+      'application/x-www-form-urlencoded',
+    );
+    expect(new URLSearchParams(init?.body ?? '').get('path')).toBe(
+      '/Wallabag/Gone.epub',
+    );
   });
 });
 
@@ -1345,5 +1437,50 @@ describe('setup wizard Sync', () => {
 
     expect(api.fetchToSd).toHaveBeenCalledTimes(2);
     expect(sync.disabled).toBe(false);
+  });
+});
+
+describe('setup wizard Sync prune', () => {
+  it('prunes an archived tracked article and adds the count to the summary', async () => {
+    const { container, fetchImpl } = mountSync({
+      articleIds: [],
+      files: [{ name: 'Gone.epub', isDirectory: false }],
+      syncState: {
+        articles: { '9': { filename: 'Gone.epub', status: 'pulled' } },
+      },
+    });
+
+    buttonByText(container, 'Sync').click();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toContain('1 pruned');
+    });
+
+    expect(syncStatus(container).textContent).toContain('0 pulled');
+    const deleteCall = fetchImpl.mock.calls.find(([url]) => url === '/delete');
+    expect(deleteCall?.[1]?.method).toBe('POST');
+    expect(new URLSearchParams(deleteCall?.[1]?.body ?? '').get('path')).toBe(
+      '/Wallabag/Gone.epub',
+    );
+  });
+
+  it('omits the prune count when prune_on_sync is off', async () => {
+    const { container, fetchImpl } = mountSync({
+      articleIds: [],
+      files: [{ name: 'Gone.epub', isDirectory: false }],
+      syncState: {
+        articles: { '9': { filename: 'Gone.epub', status: 'pulled' } },
+      },
+      config: { ...SYNC_CONFIG, prune_on_sync: false },
+    });
+
+    buttonByText(container, 'Sync').click();
+
+    await vi.waitFor(() => {
+      expect(syncStatus(container).textContent).toMatch(/0 pulled/);
+    });
+
+    expect(syncStatus(container).textContent).not.toContain('pruned');
+    expect(fetchImpl.mock.calls.some(([url]) => url === '/delete')).toBe(false);
   });
 });

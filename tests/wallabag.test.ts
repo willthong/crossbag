@@ -196,3 +196,19 @@ describe('wallabag config auth body', () => {
     expect(parsed.auth_body).toBeUndefined();
   });
 });
+
+describe('wallabag config prune', () => {
+  it('accepts the prune_on_sync flag the wizard writes', () => {
+    const parsed = WallabagConfigSchema.parse({
+      ...wizardConfig,
+      prune_on_sync: false,
+    });
+
+    expect(parsed.prune_on_sync).toBe(false);
+  });
+
+  it('defaults the flag on for configs written before it existed', () => {
+    const parsed = WallabagConfigSchema.parse({ ...wizardConfig });
+
+    expect(parsed.prune_on_sync).toBe(true);
+  });});

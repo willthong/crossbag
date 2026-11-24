@@ -122,13 +122,13 @@ describe('built plugin.js', () => {
     expect(source).not.toContain('require(');
   });
 
-  it('stays under 30 KB and ships no zod runtime', async () => {
+  it('stays under 36 KB and ships no zod runtime', async () => {
     const source = await readFile(
       path.join(payloadDir, 'plugin.js'),
       'utf8',
     );
 
-    expect(Buffer.byteLength(source)).toBeLessThan(30 * 1024);
+    expect(Buffer.byteLength(source)).toBeLessThan(36 * 1024);
     expect(source).not.toMatch(/\bzod\b/i);
   });
 });

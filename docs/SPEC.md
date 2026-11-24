@@ -9,14 +9,15 @@ Two interfaces with a strict split:
 ```
 plugin.js   →  setup wizard + Sync (browser on phone/computer)
                - Form: server URL, client ID, client secret, username,
-                 password, sync_limit, date_prefixed_filenames; prefilled
-                 from config.json when saved
+                 password, sync_limit, date_prefixed_filenames,
+                 prune_on_sync; prefilled from config.json when saved
                - "Test Connection" button → api.relay()
                  (server URL is trimmed and must be a full http(s)://host
                  address; a device relay failure is reported in words)
                - "Save" button → api.writeFile() writes config.json
                - "Sync" button → loads config.json via readFile(), lists
-                 /Wallabag, pages unread articles, dedupes presence-aware,
+                 /Wallabag, prunes archived/deleted tracked EPUBs via
+                 POST /delete, pages unread articles, dedupes presence-aware,
                  downloads via api.fetchToSd(), writes sync-state.json
 
 device.json →  daily on-reader catalog
@@ -40,8 +41,8 @@ crossbag.crosspoint-plugin/
 Runtime files in the plugin folder on the SD card, not listed in
 `manifest.json → files`:
 
-- `config.json` — credentials, the pre-encoded `auth_body`, `sync_limit`, and
-  `date_prefixed_filenames` written by the wizard
+- `config.json` — credentials, the pre-encoded `auth_body`, `sync_limit`,
+  `date_prefixed_filenames`, and `prune_on_sync` written by the wizard
 - `sync-state.json` — Sync's ledger of attempted articles and statuses
 
 ## Wallabag API integration
@@ -53,7 +54,11 @@ Runtime files in the plugin folder on the SD card, not listed in
   `&` or `+` (see ADR 0005)
 - **Browse**:
   `GET /api/entries?archive=0&sort=created&order=desc&page={page}&perPage={limit}`
+- **Reconcile**: `GET /api/entries/{id}` per tracked article; prune only on a
+  `404` or a truthy `is_archived`, never on an error or unreadable reply
 - **Download**: `GET /api/entries/{id}/export.epub`
+- **Delete**: same-origin `POST /delete` with form field `path`, one file at a
+  time (see ADR 0003)
 - **Response format**: JSON, items under `_embedded.items`
 
 ## Plugin Hub publishing
@@ -68,7 +73,7 @@ Runtime files in the plugin folder on the SD card, not listed in
 
 - **Language**: TypeScript (for plugin.ts wizard + tests)
 - **Build**: esbuild bundles `src/plugin.ts` → `plugin.js` (unminified,
-  under 30 KB, no zod in the runtime bundle)
+  under 36 KB, no zod in the runtime bundle)
 - **Type checking**: `tsc --noEmit`
 - **Linting**: ESLint (max 90 char lines)
 - **Testing**: Vitest + Zod schema validation

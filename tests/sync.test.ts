@@ -9,6 +9,7 @@ const CONFIG: WallabagConfig = {
   username: 'reader',
   password: 'hunter2',
   sync_limit: 50,
+  prune_on_sync: true,
 };
 
 function configWithLimit(syncLimit: number): WallabagConfig {
@@ -67,6 +68,13 @@ function readPageNumber(url: string): number {
   return page === null ? 1 : Number(page);
 }
 
+/** The relay calls that paged the unread listing, excluding token and prune. */
+function pageCalls(relay: { mock: { calls: unknown[][] } }): unknown[][] {
+  return relay.mock.calls.filter((call) =>
+    String(call[1]).includes('/api/entries?'),
+  );
+}
+
 function articleIdFromUrl(url: string): number {
   const match = /\/api\/entries\/(\d+)\/export\.epub$/.exec(url);
   const id = match?.[1];
@@ -100,6 +108,10 @@ interface HarnessOptions {
   pageError?: (
     page: number,
   ) => Error | { status: number; body: string } | undefined;
+  entryResponse?: (
+    id: number,
+  ) => Error | { status: number; body: string } | undefined;
+  deleteStatus?: (path: string) => number;
 }
 
 function makeHarness(options: HarnessOptions) {
@@ -111,6 +123,7 @@ function makeHarness(options: HarnessOptions) {
     dest: string;
     headers: Record<string, string>;
   }[] = [];
+  const deleteCalls: string[] = [];
 
   const relay = vi.fn<SyncDeps['relay']>(async (_method, url) => {
     if (url.endsWith('/oauth/v2/token')) {
@@ -121,6 +134,19 @@ function makeHarness(options: HarnessOptions) {
         return options.tokenError;
       }
       return { status: 200, body: tokenResponse(token) };
+    }
+
+    const entryId = /\/api\/entries\/(\d+)$/.exec(url)?.[1];
+    if (entryId !== undefined) {
+      const id = Number(entryId);
+      const response = options.entryResponse?.(id) ?? {
+        status: 200,
+        body: JSON.stringify({ id, is_archived: 0 }),
+      };
+      if (response instanceof Error) {
+        throw response;
+      }
+      return response;
     }
 
     const page = readPageNumber(url);
@@ -182,12 +208,18 @@ function makeHarness(options: HarnessOptions) {
     return sidecar;
   });
 
+  const deleteFile = vi.fn<SyncDeps['deleteFile']>(async (path) => {
+    deleteCalls.push(path);
+    return { status: options.deleteStatus?.(path) ?? 200 };
+  });
+
   const deps: SyncDeps = {
     relay,
     fetchToSd,
     writeFile,
     listFiles,
     readFile,
+    deleteFile,
   };
 
   return {
@@ -197,8 +229,10 @@ function makeHarness(options: HarnessOptions) {
     writeFile,
     listFiles,
     readFile,
+    deleteFile,
     writes,
     fetchCalls,
+    deleteCalls,
   };
 }
 
@@ -589,7 +623,7 @@ describe('runSync batching', () => {
 
     expect(harness.fetchCalls.map((call) => call.id)).toEqual([2, 3]);
     expect(result.pulled).toBe(2);
-    expect(harness.relay.mock.calls).toHaveLength(3);
+    expect(pageCalls(harness.relay)).toHaveLength(2);
   });
 });
 
@@ -753,5 +787,211 @@ describe('runSync summary', () => {
       reachedEnd: true,
       limitHit: false,
     });
+  });
+});
+
+function archivedBody(id: number): string {
+  return JSON.stringify({ id, is_archived: 1 });
+}
+
+function unreadBody(id: number): string {
+  return JSON.stringify({ id, is_archived: 0 });
+}
+
+function writtenState(harness: { writes: { data: string }[] }): {
+  articles: Record<string, unknown>;
+} {
+  const [write] = harness.writes;
+  return JSON.parse(decodeBase64(write?.data ?? '')) as {
+    articles: Record<string, unknown>;
+  };
+}
+
+function entryCalls(relay: {
+  mock: { calls: unknown[][] };
+}): string[] {
+  return relay.mock.calls
+    .map((call) => String(call[1]))
+    .filter((url) => /\/api\/entries\/\d+$/.test(url));
+}
+
+describe('runSync prune', () => {
+  it('prunes an archived tracked EPUB and its sidecar', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Gone.epub', 'Gone.epub.meta.json'],
+      syncState: {
+        articles: { '5': { filename: 'Gone.epub', status: 'pulled' } },
+      },
+      entryResponse: (id) => ({ status: 200, body: archivedBody(id) }),
+    });
+
+    const result = await runSync(harness.deps, CONFIG);
+
+    expect(result.pruned).toBe(1);
+    expect(harness.deleteCalls).toEqual([
+      '/Wallabag/Gone.epub',
+      '/Wallabag/Gone.epub.meta.json',
+    ]);
+    expect(writtenState(harness).articles['5']).toBeUndefined();
+  });
+
+  it('prunes a tracked article the server answers 404 for', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Deleted upstream.epub'],
+      syncState: {
+        articles: {
+          '7': { filename: 'Deleted upstream.epub', status: 'pulled' },
+        },
+      },
+      entryResponse: () => ({ status: 404, body: '' }),
+    });
+
+    const result = await runSync(harness.deps, CONFIG);
+
+    expect(result.pruned).toBe(1);
+    expect(harness.deleteCalls).toEqual(['/Wallabag/Deleted upstream.epub']);
+    expect(writtenState(harness).articles['7']).toBeUndefined();
+  });
+
+  it('keeps an unread tracked article and its ledger entry', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Still unread.epub'],
+      syncState: {
+        articles: {
+          '9': { filename: 'Still unread.epub', status: 'pulled' },
+        },
+      },
+      entryResponse: (id) => ({ status: 200, body: unreadBody(id) }),
+    });
+
+    const result = await runSync(harness.deps, CONFIG);
+
+    expect(result.pruned).toBe(0);
+    expect(harness.deleteCalls).toEqual([]);
+    expect(writtenState(harness).articles['9']).toBeDefined();
+  });
+
+  it.each([
+    ['a network error', () => new Error('/api/relay 502: relay failed')],
+    ['a 500', () => ({ status: 500, body: '' })],
+    ['a malformed body', () => ({ status: 200, body: 'not json' })],
+    [
+      'a body without is_archived',
+      () => ({ status: 200, body: JSON.stringify({ id: 3 }) }),
+    ],
+  ])('deletes nothing after %s', async (_label, entryResponse) => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Ambiguous.epub'],
+      syncState: {
+        articles: { '3': { filename: 'Ambiguous.epub', status: 'pulled' } },
+      },
+      entryResponse,
+    });
+
+    const result = await runSync(harness.deps, CONFIG);
+
+    expect(result.pruned).toBe(0);
+    expect(harness.deleteCalls).toEqual([]);
+    expect(writtenState(harness).articles['3']).toBeDefined();
+  });
+
+  it('prunes a catalog-pulled article tracked only by its sidecar', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Catalog book.epub', 'Catalog book.epub.meta.json'],
+      sidecars: {
+        'Catalog book.epub.meta.json': JSON.stringify({ book_id: 42 }),
+      },
+      entryResponse: (id) => ({ status: 200, body: archivedBody(id) }),
+    });
+
+    const result = await runSync(harness.deps, CONFIG);
+
+    expect(result.pruned).toBe(1);
+    expect(harness.deleteCalls).toEqual([
+      '/Wallabag/Catalog book.epub',
+      '/Wallabag/Catalog book.epub.meta.json',
+    ]);
+  });
+
+  it('never touches files crossbag did not record', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Hand placed.epub', 'notes.txt', 'Shelves'],
+    });
+
+    const result = await runSync(harness.deps, CONFIG);
+
+    expect(result.pruned).toBe(0);
+    expect(entryCalls(harness.relay)).toEqual([]);
+    expect(harness.deleteCalls).toEqual([]);
+  });
+
+  it('keeps the ledger entry when a delete fails, to retry next sync', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Partial.epub', 'Partial.epub.meta.json'],
+      syncState: {
+        articles: { '8': { filename: 'Partial.epub', status: 'pulled' } },
+      },
+      entryResponse: (id) => ({ status: 200, body: archivedBody(id) }),
+      deleteStatus: (path) => (path.endsWith('.meta.json') ? 500 : 200),
+    });
+
+    const result = await runSync(harness.deps, CONFIG);
+
+    expect(result.pruned).toBe(0);
+    expect(harness.deleteCalls).toEqual([
+      '/Wallabag/Partial.epub',
+      '/Wallabag/Partial.epub.meta.json',
+    ]);
+    expect(writtenState(harness).articles['8']).toBeDefined();
+  });
+
+  it('skips the phase entirely when prune_on_sync is false', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['Gone.epub', 'Gone.epub.meta.json'],
+      syncState: {
+        articles: { '6': { filename: 'Gone.epub', status: 'pulled' } },
+      },
+      entryResponse: (id) => ({ status: 200, body: archivedBody(id) }),
+    });
+
+    const result = await runSync(harness.deps, {
+      ...CONFIG,
+      prune_on_sync: false,
+    });
+
+    expect(result.pruned).toBeUndefined();
+    expect(entryCalls(harness.relay)).toEqual([]);
+    expect(harness.deleteCalls).toEqual([]);
+    expect(writtenState(harness).articles['6']).toBeDefined();
+  });
+
+  it('reports pruning progress before the pull phase', async () => {
+    const harness = makeHarness({
+      pages: [[]],
+      files: ['A.epub', 'B.epub'],
+      syncState: {
+        articles: {
+          '1': { filename: 'A.epub', status: 'pulled' },
+          '2': { filename: 'B.epub', status: 'pulled' },
+        },
+      },
+      entryResponse: (id) => ({ status: 200, body: unreadBody(id) }),
+    });
+    const progress: SyncProgress[] = [];
+
+    await runSync(harness.deps, CONFIG, (event) => progress.push(event));
+
+    expect(progress).toEqual([
+      { phase: 'pruning', index: 1, total: 2 },
+      { phase: 'pruning', index: 2, total: 2 },
+    ]);
   });
 });

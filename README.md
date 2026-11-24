@@ -109,6 +109,7 @@ Before publishing, confirm on hardware:
 - [ ] downloading one produces an EPUB in `/Wallabag`
 - [ ] the EPUB opens and renders in the reader
 - [ ] `Sync` pulls a batch into `/Wallabag` and reports its summary
+- [ ] `Sync` removes the EPUB of an article archived in wallabag
 - [ ] `/api/entries/{id}/export.epub` returns an EPUB directly, not a redirect
       (`api.fetchToSd` does not follow redirects)
 
@@ -187,6 +188,13 @@ wallabag added date. A sorted `/Wallabag` then reads oldest-first by date
 instead of alphabetically by title. Only Sync honours it: it never renames
 files already on the card, and catalog downloads stay `{title}.epub`.
 
+**Prune archived articles** (`prune_on_sync`, on by default) makes Sync delete
+the EPUB and sidecar of every article crossbag previously downloaded once that
+article is archived or deleted in wallabag, so `/Wallabag` keeps mirroring
+what is unread upstream. Sync checks each tracked article on its own; any
+failed, non-2xx, or unreadable answer keeps the file, and files crossbag did
+not record are never touched. Turn it off to keep archived downloads.
+
 Your `config.json` is stored unencrypted on the SD card, including the client
 secret and your wallabag password. Treat the card as sensitive.
 
@@ -208,6 +216,12 @@ catalog, and re-downloads an article if its EPUB was deleted. Per-article
 failures do not stop the batch; retryable failures are tried again next sync,
 while articles deleted server-side are recorded as skipped forever.
 
+Before pulling, Sync prunes: each article crossbag previously downloaded is
+checked against wallabag, and an archived or deleted one has its EPUB and
+sidecar removed from `/Wallabag`. If a check fails or returns anything
+unexpected, the file stays. The phase can be turned off in the wizard with
+**Prune archived articles**.
+
 1. On the reader, open **File Transfer** so the web server is running.
 2. In the browser, open the **Plugins** page and select Crossbag.
 3. Make sure `config.json` is saved, then choose **Sync**.
@@ -216,7 +230,7 @@ The browser page **must stay open** while Sync runs: the loop runs in the
 page, not on the device. The status line shows progress, then a summary such
 as:
 
-`42 pulled · 1 failed (retries next sync) · 1 skipped (deleted server-side)`.
+`42 pulled · 1 failed (retries next sync) · 1 skipped (deleted server-side) · 3 pruned`.
 
 If the batch hit `sync_limit` while unread articles remained, it says so;
 run Sync again for the next batch. If the page lost its connection or a page
